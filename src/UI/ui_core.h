@@ -34,12 +34,8 @@ typedef u32 UI_WigFlags;
 enum
 {
    UI_Wig_Disabled              = (1<<0),
-   UI_Wig_MouseEvents           = (1<<1),
-   UI_Wig_KeyboardEvents        = (1<<2),
-   UI_Wig_FocusHot              = (1<<3),
-   UI_Wig_FocusActive           = (1<<4),
-   UI_Wig_FocusHotDisabled      = (1<<5),
-   UI_Wig_FocusActiveDisabled   = (1<<6),
+   UI_Wig_AllowMouse            = (1<<1),
+   UI_Wig_AllowKey              = (1<<2),
 
    UI_Wig_FloatX                = (1<<8),
    UI_Wig_FloatY                = (1<<9),
@@ -49,16 +45,16 @@ enum
    UI_Wig_Clip                  = (1<<12),
    UI_Wig_IgnoreTruncate        = (1<<13),
    UI_Wig_IgnoreHash            = (1<<14),
-   UI_Wig_DrawText              = (1<<16),
-   UI_Wig_DrawBackground        = (1<<19),
+   UI_Wig_HasText               = (1<<16),
+   UI_Wig_DrawBG                = (1<<19),
 
    UI_Wig_Floating  = UI_Wig_FloatX | UI_Wig_FloatY,
-   UI_Wig_Clickable = UI_Wig_MouseEvents | UI_Wig_KeyboardEvents,
+   UI_Wig_Interactable = UI_Wig_AllowMouse | UI_Wig_AllowKey,
 };
 
 struct UI_WigText
 {
-    Vec4_f32 color_text;
+    Vec4_f32 color;
     UI_Align alignment;
     f32      padding;
     Font_Tag font_tag;
@@ -120,8 +116,8 @@ struct UI_Wig
     f32 disabled_t;
     f32 focus_hot_t;
     f32 focus_active_t;
-    u64 first_gen_touched;
-    u64 last_gen_touched;
+    u64 init_generation;
+    u64 curr_generation;
     Vec2_f32 view_off;
     Vec2_f32 target_view_off;
 };
@@ -133,7 +129,7 @@ struct UI_WigTraversal
     i32 pop_count;
 };
 
-struct UI_Signal
+struct UI_Action
 {
     UI_Wig* wig;
     u8 clicked          : 1;
@@ -195,12 +191,7 @@ struct UI_TextPaddingNode{UI_TextPaddingNode* next; f32 v;};
 
 struct UI_SeedKeyNode{UI_SeedKeyNode* next; UI_Key v;};
 
-struct UI_FocusHotSetNode{UI_FocusHotSetNode* next; b32 v;};
-struct UI_FocusHotPossibleNode{UI_FocusHotPossibleNode* next; b32 v;};
-struct UI_FocusActiveSetNode{UI_FocusActiveSetNode* next; b32 v;};
-struct UI_FocusActivePossibleNode{UI_FocusActivePossibleNode* next; b32 v;};
-
-struct UI_State
+struct UI_Ctx
 {
     Arena* arena;
     Arena* frame_arenas[2];
@@ -209,15 +200,15 @@ struct UI_State
     u64     generation;
 
     Sys_Hnd        window;
-    Sys_EventList* events;
+    Sys_EventList* event_list;
 
-    Vec2_f32 mouse;
+    Vec2_f32 mouse_pos;
     Vec2_f32 drag_start_pos;
     Arena*   drag_arena;
-    Str8     drag_data;
+    Str8     drag_store;
 
-    UI_Key hot_key;
-    UI_Key active_key[Side_Count];
+    UI_Key hot;
+    UI_Key active[Side_Count];
     b32    frame_has_hot;
     b32    clear_hot_active;
 
@@ -226,7 +217,6 @@ struct UI_State
 
     UI_WigSlot* wig_table;
     u64         wig_table_size;
-
 
     UI_ParentNode parent_nil;
     UI_FlagsNode  flags_nil;
@@ -248,16 +238,10 @@ struct UI_State
     UI_FontNode     font_nil;
     UI_FontSizeNode font_size_nil;
 
-
     UI_TextAlignmentNode text_alignment_nil;
     UI_TextPaddingNode   text_padding_nil;
 
     UI_SeedKeyNode seed_key_nil;
-
-    UI_FocusHotSetNode focus_hot_set_nil;
-    UI_FocusHotPossibleNode focus_hot_possible_nil;
-    UI_FocusActiveSetNode focus_active_set_nil;
-    UI_FocusActivePossibleNode focus_active_possible_nil;
 
     #define Stack(T, name) struct { T* top; T* free; b32 pop_default; u32 pad; } name
     Stack(UI_ParentNode, parent_stack);
@@ -287,11 +271,6 @@ struct UI_State
     Stack(UI_TextPaddingNode, text_padding_stack);
 
     Stack(UI_SeedKeyNode, seed_key_stack);
-
-    Stack(UI_FocusHotSetNode, focus_hot_set_stack);
-    Stack(UI_FocusHotPossibleNode, focus_hot_possible_stack);
-    Stack(UI_FocusActiveSetNode, focus_active_set_stack);
-    Stack(UI_FocusActivePossibleNode, focus_active_possible_stack);
     #undef Stack
 };
 
@@ -299,17 +278,17 @@ struct UI_State
 function Arena*         UI_Arena();
 function UI_Wig*        UI_Root();
 function Sys_Hnd        UI_Window();
-function Sys_EventList* UI_Events();
+function Sys_EventList* UI_EventList();
 function Vec2_f32       UI_Mouse();
 
-function UI_State* UI_Initialise();
-function void      UI_SetState(UI_State* ui_state);
+function UI_Ctx* UI_Initialise();
+function void      UI_SetState(UI_Ctx* ui_ctx);
 
-function void UI_BeginBuild(Sys_Hnd window_handle, Sys_EventList* events);
-function void UI_EndBuild();
+function void UI_Begin(Sys_Hnd window_handle, Sys_EventList* events);
+function void UI_End();
 
 #define UI_WigSetNil(wig) ((wig) = &ui_nil_wig)
-function b32     UI_WigIsNil(UI_Wig* wig);
+function b32     UI_IsNil(UI_Wig* wig);
 function UI_Wig* UI_GetWig(UI_Key key);
 
 function UI_Key UI_ZeroKey();
@@ -322,12 +301,12 @@ function UI_Size UI_Pixels(f32 value, f32 fractional_min_size);
 
 function UI_WigTraversal UI_TraverseRevPreOrder(UI_Wig* wig, UI_Wig* stop, u64 sibling_offset, u64 child_offset);
 
-function void UI_ComputeSizeFreePass(UI_Wig* node, Axis2 axis);
-function void UI_ComputeSizeDownPass(UI_Wig* node, Axis2 axis);
-function void UI_ComputeSizeUpPass(UI_Wig* node, Axis2 axis);
-function void UI_AdjustSizePass(UI_Wig* node, Axis2 axis);
-function void UI_ComputeSizeFor(UI_Wig* node, Axis2 axis);
-function void UI_ComputeSizesPass();
+function void UI_ResolveWigDimsFreePass(UI_Wig* node, Axis2 axis);
+function void UI_ResolveWigDimsDownPass(UI_Wig* node, Axis2 axis);
+function void UI_ResolveWigDimsUpPass(UI_Wig* node, Axis2 axis);
+function void UI_ResolveWigDimsAdjustmentPass(UI_Wig* node, Axis2 axis);
+function void UI_ResolveWigDimsFor(UI_Wig* node, Axis2 axis);
+function void UI_ResolveWigDims();
 
 function UI_Wig* UI_WigCreate(UI_WigFlags flags, UI_Key key);
 function UI_Wig* UI_WigCreate(UI_WigFlags flags, Str8 string);
@@ -340,14 +319,11 @@ function Str8    UI_WigGetDisplayString(UI_Wig* wig);
 function Str8    UI_WigGetHashString(Str8 string);
 
 function Vec2_f32  UI_GetTextPos(UI_Wig* wig);
-function UI_Signal UI_GetSignal(UI_Wig* wig);
+function UI_Action UI_GetAction(UI_Wig* wig);
 
-function b32 UI_IsFocusHot();
-function b32 UI_IsFocusActive();
-
-function void UI_InitialiseUIStateStacks(UI_State* ui_state);
-function void UI_InitialiseUINilStateStacks(UI_State* ui_state);
-function void UI_ProcessDefaultUIStateStacks(UI_State* ui_state);
+function void UI_InitialiseUIStateStacks(UI_Ctx* ui_ctx);
+function void UI_InitialiseUINilStateStacks(UI_Ctx* ui_ctx);
+function void UI_ProcessDefaultUIStateStacks(UI_Ctx* ui_ctx);
 
 function void UI_SetNextDesiredSize(Axis2 axis, UI_Size v);
 
@@ -368,10 +344,6 @@ function Axis2                 UI_GetLayoutDirection();
 function UI_Align      UI_GetTextAlignment();
 function f32                   UI_GetTextPadding();
 function UI_Key                UI_GetSeedKey();
-function b32                   UI_GetFocusHotSet();
-function b32                   UI_GetFocusHotPossible();
-function b32                   UI_GetFocusActiveSet();
-function b32                   UI_GetFocusActivePossible();
 
 function UI_Wig*               UI_SetParent(UI_Wig* v);
 function UI_WigFlags           UI_SetFlags(UI_WigFlags v);
@@ -390,10 +362,6 @@ function Axis2                 UI_SetLayoutDirection(Axis2 v);
 function UI_Align      UI_SetTextAlignment(UI_Align v);
 function f32                   UI_SetTextPadding(f32 v);
 function UI_Key                UI_SetSeedKey(UI_Key v);
-function b32                   UI_SetFocusHotSet(b32 v);
-function b32                   UI_SetFocusHotPossible(b32 v);
-function b32                   UI_SetFocusActiveSet(b32 v);
-function b32                   UI_SetFocusActivePossible(b32 v);
 
 function UI_Wig*               UI_PopParent();
 function UI_WigFlags           UI_PopFlags();
@@ -411,10 +379,6 @@ function Axis2                 UI_PopLayoutDirection();
 function UI_Align      UI_PopTextAlignment();
 function f32                   UI_PopTextPadding();
 function UI_Key                UI_PopSeedKey();
-function b32                   UI_PopFocusHotSet();
-function b32                   UI_PopFocusHotPossible();
-function b32                   UI_PopFocusActiveSet();
-function b32                   UI_PopFocusActivePossible();
 
 function UI_Wig*               UI_SetNextParent(UI_Wig* v);
 function UI_WigFlags           UI_SetNextFlags(UI_WigFlags v);
@@ -433,10 +397,6 @@ function Axis2                 UI_SetNextLayoutDirection(Axis2 v);
 function UI_Align              UI_SetNextTextAlignment(UI_Align v);
 function f32                   UI_SetNextTextPadding(f32 v);
 function UI_Key                UI_SetNextSeedKey(UI_Key v);
-function b32                   UI_SetNextFocusHotSet(b32 v);
-function b32                   UI_SetNextFocusHotPossible(b32 v);
-function b32                   UI_SetNextFocusActiveSet(b32 v);
-function b32                   UI_SetNextFocusActivePossible(b32 v);
 
 
 #define UI_Parent(v) ScopedContextBlock(UI_SetParent(v), UI_PopParent())

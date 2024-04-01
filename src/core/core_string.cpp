@@ -254,28 +254,28 @@ StrPushCopy(Arena* arena, Str8 string)
 }
 
 function Str8
-StrPushFV(Arena* arena, char* fmt, va_list args)
+StrPushFV(Arena* arena, char* format_str, va_list args)
 {
     Str8 result = {};
 
     va_list args2;
     va_copy(args2, args);
-    u32 needed_bytes = stbsp_vsnprintf(0, 0, fmt, args) + 1;
+    u32 needed_bytes = stbsp_vsnprintf(0, 0, format_str, args) + 1;
     result.str = PushArrayNZ(arena, u8, needed_bytes);
     result.size = needed_bytes - 1;
-    stbsp_vsnprintf((char*)result.str, needed_bytes, fmt, args2);
+    stbsp_vsnprintf((char*)result.str, needed_bytes, format_str, args2);
 
     return result;
 }
 
 function Str8
-StrPushF(Arena* arena, char* fmt, ...)
+StrPushF(Arena* arena, char* format_str, ...)
 {
     Str8 result = {};
 
     va_list args;
-    va_start(args, fmt);
-    result = StrPushFV(arena, fmt, args);
+    va_start(args, format_str);
+    result = StrPushFV(arena, format_str, args);
     va_end(args);
 
     return result;

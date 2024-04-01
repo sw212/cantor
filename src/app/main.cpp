@@ -20,6 +20,7 @@
 
 //
 #include "sys_entry.cpp"
+#include <stdio.h>
 
 function void
 EntryPoint()
@@ -32,7 +33,7 @@ EntryPoint()
     Font_Initialise(Vec2_i64{1024, 1024});
     Draw_Initialise();
 
-    UI_State* ui = UI_Initialise();
+    UI_Ctx* ui = UI_Initialise();
 
     Vec2_i32      window_dims  = {1280, 720};
     Str8          window_title = StringLiteral("Application");
@@ -62,19 +63,23 @@ EntryPoint()
             {
                 // UI
                 {
-                    UI_BeginBuild(window_handle, &events);
+                    UI_Begin(window_handle, &events);
                     {
+                        UI_SetFontSize(8.f);
 
                         UI_DesiredHeight(UI_Pixels(100.f, 1.f))
                         UI_DesiredWidth(UI_Pixels(200.f, 1.f))
                         {
                             UI_Text("Text_1");
                             UI_Space(UI_Pixels(10.f, 0.f));
-                            UI_Button("Button_1");
+                            if (UI_Button("Button_1").clicked)
+                            {
+                                UI_Text("Clicked");
+                            }
                         }
                     }
-                    UI_EndBuild();
-                    UI_ComputeSizesPass();
+                    UI_End();
+                    UI_ResolveWigDims();
                 }
 
                 // Draw

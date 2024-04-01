@@ -1,22 +1,22 @@
-function UI_Signal
+function UI_Action
 UI_Text(Str8 string)
 {
-    UI_Wig* wig = UI_WigCreate(UI_Wig_DrawText, StringLiteral(""));
+    UI_Wig* wig = UI_WigCreate(UI_Wig_HasText, StringLiteral(""));
     UI_WigSetDisplayString(wig, string);
-    UI_Signal result = UI_GetSignal(wig);
+    UI_Action result = UI_GetAction(wig);
 
     return result;
 }
 
-function UI_Signal
-UI_Text(char *fmt, ...)
+function UI_Action
+UI_Text(char *format_str, ...)
 {
     Scratch scratch = ScratchBegin(0, 0);
     va_list args;
 
-    va_start(args, fmt);
-    Str8 string = StrPushFV(scratch.arena, fmt, args);
-    UI_Signal result = UI_Text(string);
+    va_start(args, format_str);
+    Str8 string = StrPushFV(scratch.arena, format_str, args);
+    UI_Action result = UI_Text(string);
     va_end(args);
 
     ScratchEnd(scratch);
@@ -33,29 +33,29 @@ UI_Space(UI_Size size)
     UI_Wig* wig = UI_WigCreate(0, StringLiteral(""));
 }
 
-function UI_Signal
+function UI_Action
 UI_Button(Str8 string)
 {
     UI_WigFlags flags = 
-       UI_Wig_DrawBackground |
-       UI_Wig_DrawText |
-       UI_Wig_Clickable;
+       UI_Wig_DrawBG |
+       UI_Wig_HasText |
+       UI_Wig_Interactable;
 
     UI_Wig* wig = UI_WigCreate(flags, string);
-    UI_Signal result = UI_GetSignal(wig);
+    UI_Action result = UI_GetAction(wig);
 
     return result;
 }
 
-function UI_Signal
-UI_Button(char* fmt, ...)
+function UI_Action
+UI_Button(char* format_str, ...)
 {
     Scratch scratch = ScratchBegin(0, 0);
 
     va_list args;
-    va_start(args, fmt);
-    Str8 string = StrPushFV(scratch.arena, fmt, args);
-    UI_Signal result = UI_Button(string);
+    va_start(args, format_str);
+    Str8 string = StrPushFV(scratch.arena, format_str, args);
+    UI_Action result = UI_Button(string);
     va_end(args);
 
     ScratchEnd(scratch);
@@ -76,13 +76,13 @@ UI_BeginColumn(Str8 string)
     UI_SetParent(wig);
 }
 function void
-UI_BeginColumn(char *fmt, ...)
+UI_BeginColumn(char *format_str, ...)
 {
     Scratch scratch = ScratchBegin(0, 0);
 
     va_list args;
-    va_start(args, fmt);
-    Str8 string = StrPushFV(scratch.arena, fmt, args);
+    va_start(args, format_str);
+    Str8 string = StrPushFV(scratch.arena, format_str, args);
     UI_BeginColumn(string);
     va_end(args);
 

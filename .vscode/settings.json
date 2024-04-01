@@ -21,7 +21,7 @@
         "-I${workspaceFolder}\\src\\font",
         "-I${workspaceFolder}\\src\\draw",
         "-I${workspaceFolder}\\src\\ui",
-        "-I${workspaceFolder}\\src\\third_party",
+        "-I${workspaceFolder}\\src\\external",
         "-include${workspaceFolder}\\src\\core\\core.h",
         "-include${workspaceFolder}\\src\\sys\\sys.h",
         "-include${workspaceFolder}\\src\\hash\\hash.h",

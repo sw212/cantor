@@ -11,7 +11,7 @@ include_directories(src/render)
 include_directories(src/font)
 include_directories(src/draw)
 include_directories(src/ui)
-include_directories(src/third_party)
+include_directories(src/external)
 
 add_executable(${PROJECT_NAME} src/app/main.cpp)
 

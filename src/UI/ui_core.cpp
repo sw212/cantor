@@ -6,45 +6,45 @@ read_only UI_WigStyle  ui_nil_wig_style = {};
 read_only UI_WigBucket ui_nil_wig_bucket = {};
 
 
-per_thread UI_State* ui_state = 0;
+per_thread UI_Ctx* ui_ctx = 0;
 
 
 function Arena*
 UI_Arena()
 {
-    return ui_state->frame_arenas[ui_state->generation % ArrayCount(ui_state->frame_arenas)];
+    return ui_ctx->frame_arenas[ui_ctx->generation % ArrayCount(ui_ctx->frame_arenas)];
 }
 
 function UI_Wig*
 UI_Root()
 {
-    return ui_state->root;
+    return ui_ctx->root;
 }
 
 function Sys_Hnd
 UI_Window()
 {
-    return ui_state->window;
+    return ui_ctx->window;
 }
 
 function Sys_EventList*
-UI_Events()
+UI_EventList()
 {
-    return ui_state->events;
+    return ui_ctx->event_list;
 }
 
 function Vec2_f32
 UI_Mouse()
 {
-    return ui_state->mouse;
+    return ui_ctx->mouse_pos;
 }
 
-function UI_State*
+function UI_Ctx*
 UI_Initialise()
 {
     Arena* arena = ArenaAlloc(Gigabytes(64));
 
-    UI_State* ui = PushArray(arena, UI_State, 1);
+    UI_Ctx* ui = PushArray(arena, UI_Ctx, 1);
     ui->arena = arena;
     ui->wig_table_size = 4096;
     ui->wig_table = PushArray(arena, UI_WigSlot, ui->wig_table_size);
@@ -62,62 +62,62 @@ UI_Initialise()
 }
 
 function void
-UI_SetState(UI_State* ui)
+UI_SetState(UI_Ctx* ui)
 {
-    ui_state = ui;
+    ui_ctx = ui;
 }
 
 function void
-UI_BeginBuild(Sys_Hnd window_handle, Sys_EventList* events)
+UI_Begin(Sys_Hnd window_handle, Sys_EventList* event_list)
 {
-    ui_state->generation++;
+    ui_ctx->generation++;
     ArenaClear(UI_Arena());
 
-    ui_state->root = &ui_nil_wig;
-    ui_state->window = window_handle;
-    ui_state->events = events;
+    ui_ctx->root = &ui_nil_wig;
+    ui_ctx->window = window_handle;
+    ui_ctx->event_list = event_list;
 
-    ui_state->frame_has_hot = 0;
-    ui_state->mouse = Sys_GetMouse(window_handle);
+    ui_ctx->frame_has_hot = 0;
+    ui_ctx->mouse_pos = Sys_GetMouse(window_handle);
 
-    UI_InitialiseUIStateStacks(ui_state);
+    UI_InitialiseUIStateStacks(ui_ctx);
 
-    // Kill Action
-    if (ui_state->clear_hot_active)
+    // if clear signal -> clear hot & active
+    if (ui_ctx->clear_hot_active)
     {
-        ui_state->clear_hot_active = 0;
-        MemoryZeroStruct(&ui_state->hot_key);
-        MemoryZeroArray(ui_state->active_key);
+        ui_ctx->clear_hot_active = 0;
+        MemoryZeroStruct(&ui_ctx->hot);
+        MemoryZeroArray(ui_ctx->active);
     }
 
-    // Prune Wigs
-    for (u64 slot = 0; slot < ui_state->wig_table_size; slot++)
+    // clear unused wigs from hash table
+    for (u64 slot = 0; slot < ui_ctx->wig_table_size; slot++)
     {
-        for (UI_Wig* wig = ui_state->wig_table[slot].first,* next = 0; !UI_WigIsNil(wig); wig = next)
+        for (UI_Wig* wig = ui_ctx->wig_table[slot].first,* next = 0; !UI_IsNil(wig); wig = next)
         {
             next = wig->hash_next;
 
-            if (UI_MatchKey(wig->key, UI_ZeroKey()) || wig->last_gen_touched + 1 < ui_state->generation)
+            if (UI_MatchKey(wig->key, UI_ZeroKey()) || wig->curr_generation + 1 < ui_ctx->generation)
             {
-                DLLRemove_NPZ(ui_state->wig_table[slot].first, ui_state->wig_table[slot].last, wig, hash_next, hash_prev, UI_WigIsNil, UI_WigSetNil);
-                StackPush(ui_state->free_wig, wig);
-                ui_state->free_wig_count++;
+                DLLRemove_NPZ(ui_ctx->wig_table[slot].first, ui_ctx->wig_table[slot].last, wig, hash_next, hash_prev, UI_IsNil, UI_WigSetNil);
+                StackPush(ui_ctx->free_wig, wig);
+                ui_ctx->free_wig_count++;
             }
         }
     }
 
-    // Zero Keys On Pruned Wigs
+    // clear hot/active keys for cleared wigs
     {
-        // Release On Active Keys
+        // active
         for (Side side = Side(0); side < Side_Count; side = Side(side + 1))
         {
-            UI_Wig* wig = UI_GetWig(ui_state->active_key[side]);
-            if (UI_WigIsNil(wig))
+            UI_Wig* wig = UI_GetWig(ui_ctx->active[side]);
+            if (UI_IsNil(wig))
             {
                 Sys_Key key = (side == Side_Min ? Sys_Key_MouseLeft : Sys_Key_MouseRight);
                 b32 release = 0;
 
-                for (Sys_Event* event = events->first; event != 0; event = event->next)
+                for (Sys_Event* event = event_list->first; event != 0; event = event->next)
                 {
                     if (Sys_HndMatch(window_handle, event->window) && event->type == Sys_Event_Release && event->key == key)
                     {
@@ -128,41 +128,39 @@ UI_BeginBuild(Sys_Hnd window_handle, Sys_EventList* events)
 
                 if (release)
                 {
-                    MemoryZeroStruct(&ui_state->active_key[side]);
+                    MemoryZeroStruct(&ui_ctx->active[side]);
                 }
             }
         }
 
-        // Hot Key
-        UI_Wig* wig = UI_GetWig(ui_state->hot_key);
-        if ((UI_WigIsNil(wig)) &&
-            (UI_MatchKey(UI_ZeroKey(), ui_state->active_key[Side_Min]) || !UI_MatchKey(ui_state->hot_key, ui_state->active_key[Side_Min])) &&
-            (UI_MatchKey(UI_ZeroKey(), ui_state->active_key[Side_Max]) || !UI_MatchKey(ui_state->hot_key, ui_state->active_key[Side_Max])))
+        // hot
+        UI_Wig* wig = UI_GetWig(ui_ctx->hot);
+        if ((UI_IsNil(wig)) &&
+            (UI_MatchKey(UI_ZeroKey(), ui_ctx->active[Side_Min]) || !UI_MatchKey(ui_ctx->hot, ui_ctx->active[Side_Min])) &&
+            (UI_MatchKey(UI_ZeroKey(), ui_ctx->active[Side_Max]) || !UI_MatchKey(ui_ctx->hot, ui_ctx->active[Side_Max])))
         {
-            ui_state->hot_key = UI_ZeroKey();
+            ui_ctx->hot = UI_ZeroKey();
         }
     }
 
-    // Build Root
+    // root
     Rect2_f32 client_rect = Sys_GetClientRect(window_handle);
     Vec2_f32  client_dims = Dimensions(client_rect);
     UI_SetNextDesiredWidth(UI_Pixels(client_dims.x, 1.f));
     UI_SetNextDesiredHeight(UI_Pixels(client_dims.y, 1.f));
     UI_SetNextLayoutDirection(Axis2_Y);
-    UI_Wig* root = UI_WigCreate(0, (char*)("window_root_%" PRIx64 ""), window_handle.v[0]);
-
-    // Root
+    UI_Wig* root = UI_WigCreate(0, (char*)("root_%" PRIx64 ""), window_handle.v[0]);
     UI_SetParent(root);
 }
 
 function void
-UI_EndBuild()
+UI_End()
 {
     UI_PopParent();
 }
 
 function b32
-UI_WigIsNil(UI_Wig* wig)
+UI_IsNil(UI_Wig* wig)
 {
     return wig == 0 || wig == &ui_nil_wig;
 }
@@ -171,11 +169,11 @@ function UI_Wig*
 UI_GetWig(UI_Key key)
 {
     UI_Wig* result = &ui_nil_wig;
-    u64 slot = key.v[0] % ui_state->wig_table_size;
+    u64 slot = key.v[0] % ui_ctx->wig_table_size;
 
     if (!UI_MatchKey(key, UI_ZeroKey()))
     {
-        for (UI_Wig* wig = ui_state->wig_table[slot].first; !UI_WigIsNil(wig); wig = wig->hash_next)
+        for (UI_Wig* wig = ui_ctx->wig_table[slot].first; !UI_IsNil(wig); wig = wig->hash_next)
         {
             if (UI_MatchKey(wig->key, key))
             {
@@ -209,9 +207,9 @@ UI_GetKey(UI_Key seed, Str8 string)
     {
         MemoryCopyStruct(&key, &seed);
 
-        for(u64 i = 0; i < string.size; i += 1)
+        for(u64 i = 0; i < string.size; i++)
         {
-            key.v[0] = ((key.v[0] << 5) + key.v[0]) + string.str[i];
+            key.v[0] = ((key.v[0] << 7) + key.v[0]) + string.str[i];
         }
     }
 
@@ -235,11 +233,11 @@ UI_GetKey(UI_Key seed, char* fmt, ...)
 function Str8
 UI_WigGetHashString(Str8 string)
 {
-    u64 triple_pound_pos = FindSubstr(string, StringLiteral("###"), 0, 0);
+    u64 hash_pos = FindSubstr(string, StringLiteral("###"), 0, 0);
 
-    if(triple_pound_pos < string.size)
+    if(hash_pos < string.size)
     {
-        string = StrSkip(string, triple_pound_pos);
+        string = StrSkip(string, hash_pos);
     }
 
     return string;
@@ -253,22 +251,22 @@ UI_Pixels(f32 value, f32 fractional_min_size)
 }
 
 function UI_WigTraversal
-UI_TraverseRevPreOrder(UI_Wig* wig, UI_Wig* stop, u64 sibling_offset, u64 child_offset)
+UI_TraverseRevPreOrder(UI_Wig* wig, UI_Wig* stop_wig, u64 sibling_offset, u64 child_offset)
 {
     UI_WigTraversal result = {};
     result.next = &ui_nil_wig;
 
     #define BoxFromOffset(wig, offset)* (UI_Wig**)((u8*)wig + offset)
-    if(!UI_WigIsNil(BoxFromOffset(wig, child_offset)))
+    if(!UI_IsNil(BoxFromOffset(wig, child_offset)))
     {
         result.next = BoxFromOffset(wig, child_offset);
         result.push_count = 1;
     }
-    else for(UI_Wig* b = wig; !UI_WigIsNil(b) && b != stop; b = b->parent)
+    else for(UI_Wig* w = wig; !UI_IsNil(w) && w != stop_wig; w = w->parent)
     {
-        if(!UI_WigIsNil(BoxFromOffset(b, sibling_offset)))
+        if(!UI_IsNil(BoxFromOffset(w, sibling_offset)))
         {
-            result.next = BoxFromOffset(b, sibling_offset);
+            result.next = BoxFromOffset(w, sibling_offset);
             break;
         }
 
@@ -280,7 +278,7 @@ UI_TraverseRevPreOrder(UI_Wig* wig, UI_Wig* stop, u64 sibling_offset, u64 child_
 }
 
 function void
-UI_ComputeSizeFreePass(UI_Wig* node, Axis2 axis)
+UI_ResolveWigDimsFreePass(UI_Wig* node, Axis2 axis)
 {
     //
     // calculate sizes for widgets that can be detemined independently (standalone) from others
@@ -321,14 +319,14 @@ UI_ComputeSizeFreePass(UI_Wig* node, Axis2 axis)
         default: break;
     }
 
-    for (UI_Wig* child = node->first; !UI_WigIsNil(child); child = child->next)
+    for (UI_Wig* child = node->first; !UI_IsNil(child); child = child->next)
     {
-        UI_ComputeSizeFreePass(child, axis);
+        UI_ResolveWigDimsFreePass(child, axis);
     }
 }
 
 function void
-UI_ComputeSizeDownPass(UI_Wig* node, Axis2 axis)
+UI_ResolveWigDimsDownPass(UI_Wig* node, Axis2 axis)
 {
     //
     // top -> bottom
@@ -343,7 +341,7 @@ UI_ComputeSizeDownPass(UI_Wig* node, Axis2 axis)
         {
             UI_Wig* parent = &ui_nil_wig;
             
-            for (UI_Wig* b = node->parent; !UI_WigIsNil(b); b = b->parent)
+            for (UI_Wig* b = node->parent; !UI_IsNil(b); b = b->parent)
             {
                 if (b->initial_size[axis].type != UI_Size_Children)
                 {
@@ -352,7 +350,7 @@ UI_ComputeSizeDownPass(UI_Wig* node, Axis2 axis)
                 }
             }
 
-            if (!UI_WigIsNil(parent))
+            if (!UI_IsNil(parent))
             {
                 node->calculated_size.v[axis] = parent->calculated_size.v[axis] * node->initial_size[axis].value;
                 node->calculated_size.v[axis] = Floor(node->calculated_size.v[axis]);       
@@ -362,14 +360,14 @@ UI_ComputeSizeDownPass(UI_Wig* node, Axis2 axis)
         default: break;
     }
 
-    for (UI_Wig* child = node->first; !UI_WigIsNil(child); child = child->next)
+    for (UI_Wig* child = node->first; !UI_IsNil(child); child = child->next)
     {
-        UI_ComputeSizeDownPass(child, axis);
+        UI_ResolveWigDimsDownPass(child, axis);
     }
 }
 
 function void
-UI_ComputeSizeUpPass(UI_Wig* node, Axis2 axis)
+UI_ResolveWigDimsUpPass(UI_Wig* node, Axis2 axis)
 {
     //
     // bottom -> top
@@ -378,9 +376,9 @@ UI_ComputeSizeUpPass(UI_Wig* node, Axis2 axis)
     //  - size that is specified as the union of child rects
     //
 
-    for (UI_Wig* child = node->first; !UI_WigIsNil(child); child = child->next)
+    for (UI_Wig* child = node->first; !UI_IsNil(child); child = child->next)
     {
-        UI_ComputeSizeDownPass(child, axis);
+        UI_ResolveWigDimsDownPass(child, axis);
     }
 
     switch (node->initial_size[axis].type)
@@ -389,7 +387,7 @@ UI_ComputeSizeUpPass(UI_Wig* node, Axis2 axis)
         {
             f32 value = 0.f;
 
-            for (UI_Wig* child = node->first; !UI_WigIsNil(child); child = child->next)
+            for (UI_Wig* child = node->first; !UI_IsNil(child); child = child->next)
             {
                 value = (axis == node->layout_direction) ? (value + child->calculated_size.v[axis]) :
                                                             Max(value, child->calculated_size.v[axis]);
@@ -403,7 +401,7 @@ UI_ComputeSizeUpPass(UI_Wig* node, Axis2 axis)
 }
 
 function void
-UI_AdjustSizePass(UI_Wig* node, Axis2 axis)
+UI_ResolveWigDimsAdjustmentPass(UI_Wig* node, Axis2 axis)
 {
     b32 overflow_allowed = b32(node->flags & (UI_Wig_OverflowX << axis));
 
@@ -413,7 +411,7 @@ UI_AdjustSizePass(UI_Wig* node, Axis2 axis)
 
     if (!overflow_allowed)
     {
-        for (UI_Wig* child = node->first; !UI_WigIsNil(child); child = child->next)
+        for (UI_Wig* child = node->first; !UI_IsNil(child); child = child->next)
         {
             b32 wig_floating = b32(child->flags & (UI_Wig_FloatX << axis));
 
@@ -437,7 +435,7 @@ UI_AdjustSizePass(UI_Wig* node, Axis2 axis)
 
         if ((overflow > 0) && (max_allowed_adjustment > 0))
         {
-            for (UI_Wig* child = node->first; !UI_WigIsNil(child); child = child->next)
+            for (UI_Wig* child = node->first; !UI_IsNil(child); child = child->next)
             {
                 b32 wig_floating = b32(child->flags & (UI_Wig_FloatX << axis));
 
@@ -463,13 +461,13 @@ UI_AdjustSizePass(UI_Wig* node, Axis2 axis)
         }
     }
 
-    // Positioning
+    // positioning
     {
         if (axis == node->layout_direction)
         {
             f32 at = 0.f;
 
-            for (UI_Wig* child = node->first; !UI_WigIsNil(child); child = child->next)
+            for (UI_Wig* child = node->first; !UI_IsNil(child); child = child->next)
             {
                 b32 wig_floating = b32(child->flags & (UI_Wig_FloatX << axis));
 
@@ -482,7 +480,7 @@ UI_AdjustSizePass(UI_Wig* node, Axis2 axis)
         }
         else
         {
-            for (UI_Wig* child = node->first; !UI_WigIsNil(child); child = child->next)
+            for (UI_Wig* child = node->first; !UI_IsNil(child); child = child->next)
             {
                 b32 wig_floating = b32(child->flags & (UI_Wig_FloatX << axis));
                 if (!wig_floating)
@@ -492,7 +490,7 @@ UI_AdjustSizePass(UI_Wig* node, Axis2 axis)
             }
         }
 
-        for (UI_Wig* child = node->first; !UI_WigIsNil(child); child = child->next)
+        for (UI_Wig* child = node->first; !UI_IsNil(child); child = child->next)
         {
             Rect2_f32 prev_rect_relative = child->rect_relative;
             child->rect_relative.min.v[axis] = child->relative_pos.v[axis];
@@ -522,27 +520,27 @@ UI_AdjustSizePass(UI_Wig* node, Axis2 axis)
         }
     }
 
-    for (UI_Wig* child = node->first; !UI_WigIsNil(child); child = child->next)
+    for (UI_Wig* child = node->first; !UI_IsNil(child); child = child->next)
     {
-        UI_AdjustSizePass(child, axis);
+        UI_ResolveWigDimsAdjustmentPass(child, axis);
     }
 }
 
 function void
-UI_ComputeSizeFor(UI_Wig* node, Axis2 axis)
+UI_ResolveWigDimsFor(UI_Wig* wig, Axis2 axis)
 {
-    UI_ComputeSizeFreePass(node, axis);
-    UI_ComputeSizeDownPass(node, axis);
-    UI_ComputeSizeUpPass(node, axis);
-    UI_AdjustSizePass(node, axis);
+    UI_ResolveWigDimsFreePass(wig, axis);
+    UI_ResolveWigDimsDownPass(wig, axis);
+    UI_ResolveWigDimsUpPass(wig, axis);
+    UI_ResolveWigDimsAdjustmentPass(wig, axis);
 }
 
 function void
-UI_ComputeSizesPass()
+UI_ResolveWigDims()
 {
     UI_Wig* root = UI_Root();
-    UI_ComputeSizeFor(root, Axis2_X);
-    UI_ComputeSizeFor(root, Axis2_Y);
+    UI_ResolveWigDimsFor(root, Axis2_X);
+    UI_ResolveWigDimsFor(root, Axis2_Y);
 }
 
 function UI_Wig*
@@ -550,107 +548,92 @@ UI_WigCreate(UI_WigFlags flags, UI_Key key)
 {
     UI_Wig* wig = UI_GetWig(key);
 
-    if (wig->last_gen_touched == ui_state->generation)
+    // already in use
+    if (wig->curr_generation == ui_ctx->generation)
     {
         wig = &ui_nil_wig;
         key = UI_ZeroKey();
     }
 
-    // Alloc if not allocated / key was used
-    b32 first_frame = 0;
-    if (UI_WigIsNil(wig))
+    // if not allocated / wig in use
+    b32 did_allocate = 0;
+    if (UI_IsNil(wig))
     {
-        u64 slot = key.v[0] % ui_state->wig_table_size;
-        first_frame = 1;
-        wig = ui_state->free_wig;
+        u64 slot = key.v[0] % ui_ctx->wig_table_size;
+        did_allocate = 1;
+        wig = ui_ctx->free_wig;
 
-        if (UI_WigIsNil(wig))
+        if (UI_IsNil(wig))
         {
-            wig = PushArray(ui_state->arena, UI_Wig, 1);
+            wig = PushArray(ui_ctx->arena, UI_Wig, 1);
         }
         else
         {
-            StackPop(ui_state->free_wig);
+            StackPop(ui_ctx->free_wig);
             MemoryZeroStruct(wig);
-            ui_state->free_wig_count--;
+            ui_ctx->free_wig_count--;
         }
 
-        DLLPushBack_NPZ(ui_state->wig_table[slot].first, ui_state->wig_table[slot].last, wig, hash_next, hash_prev, UI_WigIsNil, UI_WigSetNil);
+        DLLPushBack_NPZ(ui_ctx->wig_table[slot].first, ui_ctx->wig_table[slot].last, wig, hash_next, hash_prev, UI_IsNil, UI_WigSetNil);
         wig->key = key;
     }
 
-    // Add to tree
+    // insert wig
     UI_Wig* parent = UI_GetParent();
-    if (UI_WigIsNil(parent))
+    if (UI_IsNil(parent))
     {
-        ui_state->root = wig;
+        ui_ctx->root = wig;
     }
     else
     {
-        DLLPushBack_NPZ(parent->first, parent->last, wig, next, prev, UI_WigIsNil, UI_WigSetNil);
+        DLLPushBack_NPZ(parent->first, parent->last, wig, next, prev, UI_IsNil, UI_WigSetNil);
         parent->child_count++;
         wig->parent = parent;
     }
 
-    // Set state
-    if (!UI_WigIsNil(wig))
+    // wig state
+    if (!UI_IsNil(wig))
     {
-        // fill per-frame state
         wig->child_count = 0;
         wig->first = wig->last = &ui_nil_wig;
         wig->flags = flags | UI_GetFlags();
-        wig->flags |= UI_Wig_FocusHot            * !!ui_state->focus_hot_set_stack.top->v;
-        wig->flags |= UI_Wig_FocusHotDisabled    * (!ui_state->focus_hot_set_stack.top->v && ui_state->focus_hot_possible_stack.top->v);
-        wig->flags |= UI_Wig_FocusActive         * !!ui_state->focus_active_set_stack.top->v;
-        wig->flags |= UI_Wig_FocusActiveDisabled * (!ui_state->focus_active_set_stack.top->v && ui_state->focus_active_possible_stack.top->v);
         wig->initial_size[Axis2_X] = UI_GetDesiredWidth();
         wig->initial_size[Axis2_Y] = UI_GetDesiredHeight();
         wig->layout_direction  = UI_GetLayoutDirection();
-        wig->last_gen_touched   = ui_state->generation;
+        wig->curr_generation   = ui_ctx->generation;
         
         wig->text = &ui_nil_wig_text;
         wig->style = &ui_nil_wig_style;
         wig->bucket = &ui_nil_wig_bucket;
         
-        if(wig->flags & UI_Wig_DrawText)
+        if (wig->flags & UI_Wig_HasText)
         {
             wig->text = PushArray(UI_Arena(), UI_WigText, 1);
             wig->text->alignment  = UI_GetTextAlignment();
-            wig->text->padding = UI_GetTextPadding();
-            wig->text->font_tag          = UI_GetFont();
-            wig->text->font_size         = UI_GetFontSize();
-            wig->text->color_text        = UI_GetColorText();
+            wig->text->padding    = UI_GetTextPadding();
+            wig->text->font_tag   = UI_GetFont();
+            wig->text->font_size  = UI_GetFontSize();
+            wig->text->color      = UI_GetColorText();
         }
 
-        if(wig->flags & (UI_Wig_DrawBackground))
+        if (wig->flags & (UI_Wig_DrawBG))
         {
             wig->style = PushArray(UI_Arena(), UI_WigStyle, 1);
-            wig->style->color_background                  = UI_GetColorBackground();
-            wig->style->region                             = UI_GetRegionf32();
+            wig->style->color_background = UI_GetColorBackground();
+            wig->style->region           = UI_GetRegionf32();
         }
         
-        // fill fixed positions
+        // absolute position
         wig->relative_pos.x = UI_GetAbsoluteX();
         wig->relative_pos.y = UI_GetAbsoluteY();
         
-        // fill first-frame state
-        if(first_frame)
+        if (did_allocate)
         {
-            wig->first_gen_touched = ui_state->generation;
-        }
-        
-        // is focused -> disable per stack
-        if(wig->flags & UI_Wig_FocusHot && !UI_IsFocusHot())
-        {
-            wig->flags |= UI_Wig_FocusHotDisabled;
-        }
-        if(wig->flags & UI_Wig_FocusActive && !UI_IsFocusActive())
-        {
-            wig->flags |= UI_Wig_FocusActiveDisabled;
+            wig->init_generation = ui_ctx->generation;
         }
     }
 
-    UI_ProcessDefaultUIStateStacks(ui_state);
+    UI_ProcessDefaultUIStateStacks(ui_ctx);
 
     return wig;
 }
@@ -658,17 +641,12 @@ UI_WigCreate(UI_WigFlags flags, UI_Key key)
 function UI_Wig*
 UI_WigCreate(UI_WigFlags flags, Str8 string)
 {
-    // grab seed
     UI_Key seed = UI_GetSeedKey();
 
-    // produce a key from the string
-    Str8 string_hash_part = UI_WigGetHashString(string);
-    UI_Key key = UI_GetKey(seed, string_hash_part);
+    Str8 hash_string = UI_WigGetHashString(string);
+    UI_Key key = UI_GetKey(seed, hash_string);
 
-    // build the wig from the key
     UI_Wig* wig = UI_WigCreate(flags, key);
-
-    // defaultly equip the passed string to this wig
     wig->string = StrPushCopy(UI_Arena(), string);
 
     return wig;
@@ -762,21 +740,21 @@ UI_GetTextPos(UI_Wig* wig)
     return result;
 }
 
-function UI_Signal
-UI_GetSignal(UI_Wig* wig)
+function UI_Action
+UI_GetAction(UI_Wig* wig)
 {
-    UI_Signal result = {};
+    UI_Action result = {};
     result.wig = wig;
 
     Rect2_f32 rect = wig->rect;
-    Vec2_f32 mouse = UI_Mouse();
-    b32 wig_contains_mouse = Contains(rect, mouse);
+    Vec2_f32 mouse_pos = UI_Mouse();
+    b32 wig_contains_mouse = Contains(rect, mouse_pos);
 
-    // Handle Clipping
+    // clipping
     {
         Rect2_f32 clip_rect = Sys_GetClientRect(UI_Window());
 
-        for (UI_Wig* parent = wig->parent; !UI_WigIsNil(parent); parent = parent->parent)
+        for (UI_Wig* parent = wig->parent; !UI_IsNil(parent); parent = parent->parent)
         {
             if (parent->flags &UI_Wig_Clip)
             {
@@ -784,7 +762,7 @@ UI_GetSignal(UI_Wig* wig)
             }
         }
 
-        if (!Contains(clip_rect, mouse))
+        if (!Contains(clip_rect, mouse_pos))
         {
             wig_contains_mouse = 0;
         }
@@ -792,120 +770,108 @@ UI_GetSignal(UI_Wig* wig)
 
     result.mouse_is_over = u8(wig_contains_mouse);
 
-    // Mouse Events
-    if (wig->first_gen_touched != wig->last_gen_touched && wig->flags &UI_Wig_MouseEvents)
+    // mouse events
+    if (wig->init_generation != wig->curr_generation && wig->flags &UI_Wig_AllowMouse)
     {
         Sys_Event* left_pressed = 0;
         Sys_Event* right_pressed = 0;
         Sys_Event* left_released = 0;
         Sys_Event* right_released = 0;
         
-        for(Sys_Event* event = UI_Events()->first; event != 0; event = event->next)
+        for(Sys_Event* event = UI_EventList()->first; event != 0; event = event->next)
         {
             if(Sys_HndMatch(event->window, UI_Window()))
             {
                 if(event->type == Sys_Event_Press   && event->key == Sys_Key_MouseLeft)  { left_pressed = event; }
-                if(event->type == Sys_Event_Press   && event->key == Sys_Key_MouseRight)
-                { right_pressed = event; }
+                if(event->type == Sys_Event_Press   && event->key == Sys_Key_MouseRight) { right_pressed = event; }
                 if(event->type == Sys_Event_Release && event->key == Sys_Key_MouseLeft)  { left_released = event; }
-                if(event->type == Sys_Event_Release && event->key == Sys_Key_MouseRight)
-                { right_released = event; }
+                if(event->type == Sys_Event_Release && event->key == Sys_Key_MouseRight) { right_released = event; }
             }
         }
 
-        // Hot Keys
-        if ((UI_MatchKey(ui_state->active_key[Side_Min], UI_ZeroKey())) &&                // no curr active key
-            (UI_MatchKey(ui_state->hot_key, UI_ZeroKey()) || !ui_state->frame_has_hot) && // no curr hot key || no hot key so far
-            (wig_contains_mouse))                                                         // wig contains mouse
+        // hot wig
+        if ((UI_MatchKey(ui_ctx->active[Side_Min], UI_ZeroKey())) &&              // no curr active key
+            (UI_MatchKey(ui_ctx->hot, UI_ZeroKey()) || !ui_ctx->frame_has_hot) && // no curr hot key || no hot key so far
+            (wig_contains_mouse))                                                 // wig contains mouse
         {
-            ui_state->hot_key = wig->key;
-            ui_state->frame_has_hot = 1;
+            ui_ctx->hot = wig->key;
+            ui_ctx->frame_has_hot = 1;
         }
-        else if((UI_MatchKey(ui_state->hot_key, wig->key) ) &&                                 // wig is hot
-                (wig_contains_mouse || UI_MatchKey(ui_state->active_key[Side_Min], wig->key))) // wig contains mouse || wig is active
+        else if((UI_MatchKey(ui_ctx->hot, wig->key) ) &&                                 // wig is hot
+                (wig_contains_mouse || UI_MatchKey(ui_ctx->active[Side_Min], wig->key))) // wig contains mouse || wig is active
         {
-            ui_state->hot_key = wig->key;
-            ui_state->frame_has_hot = 1;
+            ui_ctx->hot = wig->key;
+            ui_ctx->frame_has_hot = 1;
         }
-        else if (UI_MatchKey(ui_state->hot_key, wig->key) && !wig_contains_mouse) // wig is hot && does not contain mouse
+        else if (UI_MatchKey(ui_ctx->hot, wig->key) && !wig_contains_mouse) // wig is hot && does not contain mouse
         {
-            ui_state->hot_key = UI_ZeroKey();
+            ui_ctx->hot = UI_ZeroKey();
         }
 
-        // Left Active Key
-        if (UI_MatchKey(ui_state->hot_key, wig->key) &&                  // wig is hot
-            UI_MatchKey(ui_state->active_key[Side_Min], UI_ZeroKey()) && // no curr active key
-            left_pressed)                                                // LMB event
+        // left active wig
+        if (UI_MatchKey(ui_ctx->hot, wig->key) &&                  // wig is hot
+            UI_MatchKey(ui_ctx->active[Side_Min], UI_ZeroKey()) && // no curr active key
+            left_pressed)                                          // LMB event
         {
-            Sys_ConsumeEvent(UI_Events(), left_pressed);
-            ui_state->active_key[Side_Min] = wig->key;
-            ui_state->drag_start_pos = mouse;
+            Sys_ConsumeEvent(UI_EventList(), left_pressed);
+            ui_ctx->active[Side_Min] = wig->key;
+            ui_ctx->drag_start_pos = mouse_pos;
             result.pressed = 1;
             result.dragging = 1;
             result.modifiers |= left_pressed->modifiers;
         }
-        else if (UI_MatchKey(ui_state->active_key[Side_Min], wig->key))  // wig is active
+        else if (UI_MatchKey(ui_ctx->active[Side_Min], wig->key))  // wig is active
         {
             result.dragging = 1;
             result.modifiers |= Sys_GetModifiers();
 
             if (left_released)
             {
-                Sys_ConsumeEvent(UI_Events(), left_released);
-                ui_state->active_key[Side_Min] = UI_ZeroKey();
+                Sys_ConsumeEvent(UI_EventList(), left_released);
+                ui_ctx->active[Side_Min] = UI_ZeroKey();
                 result.clicked = u8(wig_contains_mouse);
                 result.released = 1;
                 result.modifiers |= left_released->modifiers;
             }
         }
 
-        // Right Active Key
-        if (UI_MatchKey(ui_state->hot_key, wig->key) &&                  // wig is hot
-            UI_MatchKey(ui_state->active_key[Side_Max], UI_ZeroKey()) && // no curr active key
-            right_pressed)                                               // RMB event
+        // right active wig
+        if (UI_MatchKey(ui_ctx->hot, wig->key) &&                  // wig is hot
+            UI_MatchKey(ui_ctx->active[Side_Max], UI_ZeroKey()) && // no curr active key
+            right_pressed)                                         // RMB event
         {
-            Sys_ConsumeEvent(UI_Events(), right_pressed);
-            ui_state->active_key[Side_Max] = wig->key;
-            ui_state->drag_start_pos = mouse;
+            Sys_ConsumeEvent(UI_EventList(), right_pressed);
+            ui_ctx->active[Side_Max] = wig->key;
+            ui_ctx->drag_start_pos = mouse_pos;
             result.right_pressed = 1;
             result.right_dragging = 1;
             result.modifiers |= right_pressed->modifiers;
         }
-        else if (UI_MatchKey(ui_state->active_key[Side_Max], wig->key))  // wig is active
+        else if (UI_MatchKey(ui_ctx->active[Side_Max], wig->key))  // wig is active
         {
             result.right_dragging = 1;
             result.modifiers |= Sys_GetModifiers();
 
             if (right_released)
             {
-                Sys_ConsumeEvent(UI_Events(), right_released);
-                ui_state->active_key[Side_Max] = UI_ZeroKey();
+                Sys_ConsumeEvent(UI_EventList(), right_released);
+                ui_ctx->active[Side_Max] = UI_ZeroKey();
                 result.right_clicked = u8(wig_contains_mouse);
                 result.right_released = 1;
                 result.modifiers |= right_released->modifiers;
             }
         }
 
-        if(UI_MatchKey(ui_state->hot_key, wig->key) &&
-           UI_MatchKey(ui_state->active_key[Side_Min], UI_ZeroKey()) &&
-           UI_MatchKey(ui_state->active_key[Side_Max], UI_ZeroKey()) &&
+        if(UI_MatchKey(ui_ctx->hot, wig->key) &&
+           UI_MatchKey(ui_ctx->active[Side_Min], UI_ZeroKey()) &&
+           UI_MatchKey(ui_ctx->active[Side_Max], UI_ZeroKey()) &&
            wig_contains_mouse)
         {
             result.hovering = 1;
         }
-
-        // Keyboard
-        if ((wig->flags & UI_Wig_KeyboardEvents) &&
-            (wig->flags & UI_Wig_FocusHot) &&
-            Sys_ConsumeKeyPress(UI_Events(), UI_Window(), Sys_Key_Enter, 0))
-        {
-            result.clicked = 1;
-            result.pressed = 1;
-            result.keyboard_pressed = 1;
-        }
     }
 
-    if ((wig->flags & UI_Wig_Disabled) || ui_state->clear_hot_active)
+    if ((wig->flags & UI_Wig_Disabled) || ui_ctx->clear_hot_active)
     {
         result.clicked = 0;
         result.pressed = 0;
@@ -920,60 +886,10 @@ UI_GetSignal(UI_Wig* wig)
 }
 
 
-
-// - Hot/Active
-
-function b32
-UI_IsFocusHot()
-{
-    b32 result = 0;
-    UI_FocusHotSetNode *     set_node = ui_state->focus_hot_set_stack.top;
-    UI_FocusHotPossibleNode* pos_node = ui_state->focus_hot_possible_stack.top;
-    if(set_node != 0 && pos_node != 0)
-    {
-        result = 1;
-        for(;set_node != 0 && pos_node != 0; set_node = set_node->next, pos_node = pos_node->next)
-        {
-            if(!set_node->v && pos_node->v)
-            {
-                result = 0;
-                break;
-            }
-        }
-    }
-
-    return result;
-}
-
-function b32
-UI_IsFocusActive()
-{
-    b32 result = 0;
-    
-    UI_FocusActiveSetNode *     set_node = ui_state->focus_active_set_stack.top;
-    UI_FocusActivePossibleNode* pos_node = ui_state->focus_active_possible_stack.top;
-
-    if(set_node != 0 && pos_node != 0)
-    {
-        result = 1;
-        for(;set_node != 0 && pos_node != 0; set_node = set_node->next, pos_node = pos_node->next)
-        {
-            if(!set_node->v && pos_node->v)
-            {
-                result = 0;
-                break;
-            }
-        }
-    }
-
-    return result;
-}
-
-
 // - Stack
 
 function void
-UI_InitialiseUIStateStacks(UI_State* ui)
+UI_InitialiseUIStateStacks(UI_Ctx* ui)
 {
     #define InitStack(name) ui->name##_stack.top = &ui->name##_nil; ui->name##_stack.free = 0; ui->name##_stack.pop_default = 0;
     InitStack(parent)
@@ -1001,16 +917,11 @@ UI_InitialiseUIStateStacks(UI_State* ui)
     InitStack(text_padding)
 
     InitStack(seed_key)
-    
-    InitStack(focus_hot_set)
-    InitStack(focus_hot_possible)
-    InitStack(focus_active_set)
-    InitStack(focus_active_possible)
     #undef InitStack
 }
 
 function void
-UI_InitialiseUINilStateStacks(UI_State* ui)
+UI_InitialiseUINilStateStacks(UI_Ctx* ui)
 {
     ui->parent_nil.v = &ui_nil_wig;
     ui->flags_nil.v = 0;
@@ -1037,15 +948,10 @@ UI_InitialiseUINilStateStacks(UI_State* ui)
     ui->text_padding_nil.v = 0.f;
 
     ui->seed_key_nil.v = UI_ZeroKey();
-
-    ui->focus_hot_set_nil.v = 0;
-    ui->focus_hot_possible_nil.v = 0;
-    ui->focus_active_set_nil.v = 0;
-    ui->focus_active_possible_nil.v = 0;
 }
 
 function void
-UI_ProcessDefaultUIStateStacks(UI_State* ui)
+UI_ProcessDefaultUIStateStacks(UI_Ctx* ui)
 {
     #define PopStack(name, func) if (ui->name.pop_default) { func(); ui->name.pop_default = 0; }
     PopStack(parent_stack, UI_PopParent)
@@ -1072,10 +978,6 @@ UI_ProcessDefaultUIStateStacks(UI_State* ui)
     PopStack(text_padding_stack, UI_PopTextPadding)
 
     PopStack(seed_key_stack, UI_PopSeedKey)
-    PopStack(focus_hot_set_stack, UI_PopFocusHotSet)
-    PopStack(focus_hot_possible_stack, UI_PopFocusHotPossible)
-    PopStack(focus_active_set_stack, UI_PopFocusActiveSet)
-    PopStack(focus_active_possible_stack, UI_PopFocusActivePossible)
     #undef PopStack
 }
 
@@ -1089,122 +991,102 @@ UI_SetNextDesiredSize(Axis2 axis, UI_Size v)
 
 function UI_Wig* UI_GetParent()
 {
-    return ui_state->parent_stack.top->v;
+    return ui_ctx->parent_stack.top->v;
 }
 
 function UI_WigFlags UI_GetFlags()
 {
-    return ui_state->flags_stack.top->v;
+    return ui_ctx->flags_stack.top->v;
 }
 
 function f32 UI_GetAbsoluteX()
 {
-    return ui_state->absolute_x_stack.top->v;
+    return ui_ctx->absolute_x_stack.top->v;
 }
 
 function f32 UI_GetAbsoluteY()
 {
-    return ui_state->absolute_y_stack.top->v;
+    return ui_ctx->absolute_y_stack.top->v;
 }
 
 function UI_Size UI_GetDesiredWidth()
 {
-    return ui_state->desired_width_stack.top->v;
+    return ui_ctx->desired_width_stack.top->v;
 }
 
 function UI_Size UI_GetDesiredHeight()
 {
-    return ui_state->desired_height_stack.top->v;
+    return ui_ctx->desired_height_stack.top->v;
 }
 
 function Vec4_f32 UI_GetColorText()
 {
-    return ui_state->color_text_stack.top->v;
+    return ui_ctx->color_text_stack.top->v;
 }
 
 function Vec4_f32 UI_GetColorBackground()
 {
-    return ui_state->color_background_stack.top->v;
+    return ui_ctx->color_background_stack.top->v;
 }
 
 function Vec4_f32 UI_GetColorBorder()
 {
-    return ui_state->color_border_stack.top->v;
+    return ui_ctx->color_border_stack.top->v;
 }
 
 function Render_RegionTex2D_f32 UI_GetRegionf32()
 {
-    return ui_state->regionf32_stack.top->v;
+    return ui_ctx->regionf32_stack.top->v;
 }
 
 function Font_Tag UI_GetFont()
 {
-    return ui_state->font_stack.top->v;
+    return ui_ctx->font_stack.top->v;
 }
 
 function f32 UI_GetFontSize()
 {
-    return ui_state->font_size_stack.top->v;
+    return ui_ctx->font_size_stack.top->v;
 }
 
 function Axis2 UI_GetLayoutDirection()
 {
-    return ui_state->layout_direction_stack.top->v;
+    return ui_ctx->layout_direction_stack.top->v;
 }
 
 function UI_Align UI_GetTextAlignment()
 {
-    return ui_state->text_alignment_stack.top->v;
+    return ui_ctx->text_alignment_stack.top->v;
 }
 
 function f32 UI_GetTextPadding()
 {
-    return ui_state->text_padding_stack.top->v;
+    return ui_ctx->text_padding_stack.top->v;
 }
 
 function UI_Key UI_GetSeedKey()
 {
-    return ui_state->seed_key_stack.top->v;
-}
-
-function b32 UI_GetFocusHotSet()
-{
-    return ui_state->focus_hot_set_stack.top->v;
-}
-
-function b32 UI_GetFocusHotPossible()
-{
-    return ui_state->focus_hot_possible_stack.top->v;
-}
-
-function b32 UI_GetFocusActiveSet()
-{
-    return ui_state->focus_active_set_stack.top->v;
-}
-
-function b32 UI_GetFocusActivePossible()
-{
-    return ui_state->focus_active_possible_stack.top->v;
+    return ui_ctx->seed_key_stack.top->v;
 }
 
 function UI_Wig*
 UI_SetParent(UI_Wig* v)
 {
-    UI_ParentNode* node = ui_state->parent_stack.free;
+    UI_ParentNode* node = ui_ctx->parent_stack.free;
     if (node)
     {
-        StackPop(ui_state->parent_stack.free);
+        StackPop(ui_ctx->parent_stack.free);
     }
     else
     {
         node = (UI_ParentNode* )ArenaPush((UI_Arena()), sizeof(UI_ParentNode));
     }
 
-    UI_Wig* old_value = ui_state->parent_stack.top->v;
+    UI_Wig* old_value = ui_ctx->parent_stack.top->v;
     node->v = v;
-    node->next = ui_state->parent_stack.top;
-    ui_state->parent_stack.top = node;
-    ui_state->parent_stack.pop_default = 0;
+    node->next = ui_ctx->parent_stack.top;
+    ui_ctx->parent_stack.top = node;
+    ui_ctx->parent_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1212,21 +1094,21 @@ UI_SetParent(UI_Wig* v)
 function UI_WigFlags 
 UI_SetFlags(UI_WigFlags v)
 {
-    UI_FlagsNode* node = ui_state->flags_stack.free;
+    UI_FlagsNode* node = ui_ctx->flags_stack.free;
     if (node)
     {
-        StackPop(ui_state->flags_stack.free);
+        StackPop(ui_ctx->flags_stack.free);
     }
     else
     {
         node = (UI_FlagsNode* )ArenaPush((UI_Arena()), sizeof(UI_FlagsNode));
     }
 
-    UI_WigFlags old_value = ui_state->flags_stack.top->v;
+    UI_WigFlags old_value = ui_ctx->flags_stack.top->v;
     node->v = v;
-    node->next = ui_state->flags_stack.top;
-    ui_state->flags_stack.top = node;
-    ui_state->flags_stack.pop_default = 0;
+    node->next = ui_ctx->flags_stack.top;
+    ui_ctx->flags_stack.top = node;
+    ui_ctx->flags_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1234,21 +1116,21 @@ UI_SetFlags(UI_WigFlags v)
 function f32 
 UI_SetAbsoluteX(f32 v)
 {
-    UI_AbsoluteXNode* node = ui_state->absolute_x_stack.free;
+    UI_AbsoluteXNode* node = ui_ctx->absolute_x_stack.free;
     if (node)
     {
-        StackPop(ui_state->absolute_x_stack.free);
+        StackPop(ui_ctx->absolute_x_stack.free);
     }
     else
     {
         node = (UI_AbsoluteXNode* )ArenaPush((UI_Arena()), sizeof(UI_AbsoluteXNode));
     }
 
-    f32 old_value = ui_state->absolute_x_stack.top->v;
+    f32 old_value = ui_ctx->absolute_x_stack.top->v;
     node->v = v;
-    node->next = ui_state->absolute_x_stack.top;
-    ui_state->absolute_x_stack.top = node;
-    ui_state->absolute_x_stack.pop_default = 0;
+    node->next = ui_ctx->absolute_x_stack.top;
+    ui_ctx->absolute_x_stack.top = node;
+    ui_ctx->absolute_x_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1256,21 +1138,21 @@ UI_SetAbsoluteX(f32 v)
 function f32 
 UI_SetAbsoluteY(f32 v)
 {
-    UI_AbsoluteYNode* node = ui_state->absolute_y_stack.free;
+    UI_AbsoluteYNode* node = ui_ctx->absolute_y_stack.free;
     if (node)
     {
-        StackPop(ui_state->absolute_y_stack.free);
+        StackPop(ui_ctx->absolute_y_stack.free);
     }
     else
     {
         node = (UI_AbsoluteYNode* )ArenaPush((UI_Arena()), sizeof(UI_AbsoluteYNode));
     }
 
-    f32 old_value = ui_state->absolute_y_stack.top->v;
+    f32 old_value = ui_ctx->absolute_y_stack.top->v;
     node->v = v;
-    node->next = ui_state->absolute_y_stack.top;
-    ui_state->absolute_y_stack.top = node;
-    ui_state->absolute_y_stack.pop_default = 0;
+    node->next = ui_ctx->absolute_y_stack.top;
+    ui_ctx->absolute_y_stack.top = node;
+    ui_ctx->absolute_y_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1278,21 +1160,21 @@ UI_SetAbsoluteY(f32 v)
 function UI_Size 
 UI_SetDesiredWidth(UI_Size v)
 {
-    UI_DesiredWidthNode* node = ui_state->desired_width_stack.free;
+    UI_DesiredWidthNode* node = ui_ctx->desired_width_stack.free;
     if (node)
     {
-        StackPop(ui_state->desired_width_stack.free);
+        StackPop(ui_ctx->desired_width_stack.free);
     }
     else
     {
         node = (UI_DesiredWidthNode* )ArenaPush((UI_Arena()), sizeof(UI_DesiredWidthNode));
     }
 
-    UI_Size old_value = ui_state->desired_width_stack.top->v;
+    UI_Size old_value = ui_ctx->desired_width_stack.top->v;
     node->v = v;
-    node->next = ui_state->desired_width_stack.top;
-    ui_state->desired_width_stack.top = node;
-    ui_state->desired_width_stack.pop_default = 0;
+    node->next = ui_ctx->desired_width_stack.top;
+    ui_ctx->desired_width_stack.top = node;
+    ui_ctx->desired_width_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1300,21 +1182,21 @@ UI_SetDesiredWidth(UI_Size v)
 function UI_Size 
 UI_SetDesiredHeight(UI_Size v)
 {
-    UI_DesiredHeightNode* node = ui_state->desired_height_stack.free;
+    UI_DesiredHeightNode* node = ui_ctx->desired_height_stack.free;
     if (node)
     {
-        StackPop(ui_state->desired_height_stack.free);
+        StackPop(ui_ctx->desired_height_stack.free);
     }
     else
     {
         node = (UI_DesiredHeightNode* )ArenaPush((UI_Arena()), sizeof(UI_DesiredHeightNode));
     }
 
-    UI_Size old_value = ui_state->desired_height_stack.top->v;
+    UI_Size old_value = ui_ctx->desired_height_stack.top->v;
     node->v = v;
-    node->next = ui_state->desired_height_stack.top;
-    ui_state->desired_height_stack.top = node;
-    ui_state->desired_height_stack.pop_default = 0;
+    node->next = ui_ctx->desired_height_stack.top;
+    ui_ctx->desired_height_stack.top = node;
+    ui_ctx->desired_height_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1322,21 +1204,21 @@ UI_SetDesiredHeight(UI_Size v)
 function Vec4_f32 
 UI_SetColorText(Vec4_f32 v)
 {
-    UI_ColorTextNode* node = ui_state->color_text_stack.free;
+    UI_ColorTextNode* node = ui_ctx->color_text_stack.free;
     if (node)
     {
-        StackPop(ui_state->color_text_stack.free);
+        StackPop(ui_ctx->color_text_stack.free);
     }
     else
     {
         node = (UI_ColorTextNode* )ArenaPush((UI_Arena()), sizeof(UI_ColorTextNode));
     }
 
-    Vec4_f32 old_value = ui_state->color_text_stack.top->v;
+    Vec4_f32 old_value = ui_ctx->color_text_stack.top->v;
     node->v = v;
-    node->next = ui_state->color_text_stack.top;
-    ui_state->color_text_stack.top = node;
-    ui_state->color_text_stack.pop_default = 0;
+    node->next = ui_ctx->color_text_stack.top;
+    ui_ctx->color_text_stack.top = node;
+    ui_ctx->color_text_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1344,21 +1226,21 @@ UI_SetColorText(Vec4_f32 v)
 function Vec4_f32 
 UI_SetColorBackground(Vec4_f32 v)
 {
-    UI_ColorBackgroundNode* node = ui_state->color_background_stack.free;
+    UI_ColorBackgroundNode* node = ui_ctx->color_background_stack.free;
     if (node)
     {
-        StackPop(ui_state->color_background_stack.free);
+        StackPop(ui_ctx->color_background_stack.free);
     }
     else
     {
         node = (UI_ColorBackgroundNode* )ArenaPush((UI_Arena()), sizeof(UI_ColorBackgroundNode));
     }
 
-    Vec4_f32 old_value = ui_state->color_background_stack.top->v;
+    Vec4_f32 old_value = ui_ctx->color_background_stack.top->v;
     node->v = v;
-    node->next = ui_state->color_background_stack.top;
-    ui_state->color_background_stack.top = node;
-    ui_state->color_background_stack.pop_default = 0;
+    node->next = ui_ctx->color_background_stack.top;
+    ui_ctx->color_background_stack.top = node;
+    ui_ctx->color_background_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1366,21 +1248,21 @@ UI_SetColorBackground(Vec4_f32 v)
 function Vec4_f32 
 UI_SetColorBorder(Vec4_f32 v)
 {
-    UI_ColorBorderNode* node = ui_state->color_border_stack.free;
+    UI_ColorBorderNode* node = ui_ctx->color_border_stack.free;
     if (node)
     {
-        StackPop(ui_state->color_border_stack.free);
+        StackPop(ui_ctx->color_border_stack.free);
     }
     else
     {
         node = (UI_ColorBorderNode* )ArenaPush((UI_Arena()), sizeof(UI_ColorBorderNode));
     }
 
-    Vec4_f32 old_value = ui_state->color_border_stack.top->v;
+    Vec4_f32 old_value = ui_ctx->color_border_stack.top->v;
     node->v = v;
-    node->next = ui_state->color_border_stack.top;
-    ui_state->color_border_stack.top = node;
-    ui_state->color_border_stack.pop_default = 0;
+    node->next = ui_ctx->color_border_stack.top;
+    ui_ctx->color_border_stack.top = node;
+    ui_ctx->color_border_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1388,21 +1270,21 @@ UI_SetColorBorder(Vec4_f32 v)
 function Render_RegionTex2D_f32 
 UI_SetRegionf32(Render_RegionTex2D_f32 v)
 {
-    UI_Regionf32Node* node = ui_state->regionf32_stack.free;
+    UI_Regionf32Node* node = ui_ctx->regionf32_stack.free;
     if (node)
     {
-        StackPop(ui_state->regionf32_stack.free);
+        StackPop(ui_ctx->regionf32_stack.free);
     }
     else
     {
         node = (UI_Regionf32Node* )ArenaPush((UI_Arena()), sizeof(UI_Regionf32Node));
     }
 
-    Render_RegionTex2D_f32 old_value = ui_state->regionf32_stack.top->v;
+    Render_RegionTex2D_f32 old_value = ui_ctx->regionf32_stack.top->v;
     node->v = v;
-    node->next = ui_state->regionf32_stack.top;
-    ui_state->regionf32_stack.top = node;
-    ui_state->regionf32_stack.pop_default = 0;
+    node->next = ui_ctx->regionf32_stack.top;
+    ui_ctx->regionf32_stack.top = node;
+    ui_ctx->regionf32_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1410,21 +1292,21 @@ UI_SetRegionf32(Render_RegionTex2D_f32 v)
 function Font_Tag 
 UI_SetFont(Font_Tag v)
 {
-    UI_FontNode* node = ui_state->font_stack.free;
+    UI_FontNode* node = ui_ctx->font_stack.free;
     if (node)
     {
-        StackPop(ui_state->font_stack.free);
+        StackPop(ui_ctx->font_stack.free);
     }
     else
     {
         node = (UI_FontNode* )ArenaPush((UI_Arena()), sizeof(UI_FontNode));
     }
 
-    Font_Tag old_value = ui_state->font_stack.top->v;
+    Font_Tag old_value = ui_ctx->font_stack.top->v;
     node->v = v;
-    node->next = ui_state->font_stack.top;
-    ui_state->font_stack.top = node;
-    ui_state->font_stack.pop_default = 0;
+    node->next = ui_ctx->font_stack.top;
+    ui_ctx->font_stack.top = node;
+    ui_ctx->font_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1432,21 +1314,21 @@ UI_SetFont(Font_Tag v)
 function f32 
 UI_SetFontSize(f32 v)
 {
-    UI_FontSizeNode* node = ui_state->font_size_stack.free;
+    UI_FontSizeNode* node = ui_ctx->font_size_stack.free;
     if (node)
     {
-        StackPop(ui_state->font_size_stack.free);
+        StackPop(ui_ctx->font_size_stack.free);
     }
     else
     {
         node = (UI_FontSizeNode* )ArenaPush((UI_Arena()), sizeof(UI_FontSizeNode));
     }
 
-    f32 old_value = ui_state->font_size_stack.top->v;
+    f32 old_value = ui_ctx->font_size_stack.top->v;
     node->v = v;
-    node->next = ui_state->font_size_stack.top;
-    ui_state->font_size_stack.top = node;
-    ui_state->font_size_stack.pop_default = 0;
+    node->next = ui_ctx->font_size_stack.top;
+    ui_ctx->font_size_stack.top = node;
+    ui_ctx->font_size_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1454,21 +1336,21 @@ UI_SetFontSize(f32 v)
 function Axis2 
 UI_SetLayoutDirection(Axis2 v)
 {
-    UI_LayoutDirectionNode* node = ui_state->layout_direction_stack.free;
+    UI_LayoutDirectionNode* node = ui_ctx->layout_direction_stack.free;
     if (node)
     {
-        StackPop(ui_state->layout_direction_stack.free);
+        StackPop(ui_ctx->layout_direction_stack.free);
     }
     else
     {
         node = (UI_LayoutDirectionNode* )ArenaPush((UI_Arena()), sizeof(UI_LayoutDirectionNode));
     }
 
-    Axis2 old_value = ui_state->layout_direction_stack.top->v;
+    Axis2 old_value = ui_ctx->layout_direction_stack.top->v;
     node->v = v;
-    node->next = ui_state->layout_direction_stack.top;
-    ui_state->layout_direction_stack.top = node;
-    ui_state->layout_direction_stack.pop_default = 0;
+    node->next = ui_ctx->layout_direction_stack.top;
+    ui_ctx->layout_direction_stack.top = node;
+    ui_ctx->layout_direction_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1476,21 +1358,21 @@ UI_SetLayoutDirection(Axis2 v)
 function UI_Align 
 UI_SetTextAlignment(UI_Align v)
 {
-    UI_TextAlignmentNode* node = ui_state->text_alignment_stack.free;
+    UI_TextAlignmentNode* node = ui_ctx->text_alignment_stack.free;
     if (node)
     {
-        StackPop(ui_state->text_alignment_stack.free);
+        StackPop(ui_ctx->text_alignment_stack.free);
     }
     else
     {
         node = (UI_TextAlignmentNode* )ArenaPush((UI_Arena()), sizeof(UI_TextAlignmentNode));
     }
 
-    UI_Align old_value = ui_state->text_alignment_stack.top->v;
+    UI_Align old_value = ui_ctx->text_alignment_stack.top->v;
     node->v = v;
-    node->next = ui_state->text_alignment_stack.top;
-    ui_state->text_alignment_stack.top = node;
-    ui_state->text_alignment_stack.pop_default = 0;
+    node->next = ui_ctx->text_alignment_stack.top;
+    ui_ctx->text_alignment_stack.top = node;
+    ui_ctx->text_alignment_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1498,21 +1380,21 @@ UI_SetTextAlignment(UI_Align v)
 function f32 
 UI_SetTextPadding(f32 v)
 {
-    UI_TextPaddingNode* node = ui_state->text_padding_stack.free;
+    UI_TextPaddingNode* node = ui_ctx->text_padding_stack.free;
     if (node)
     {
-        StackPop(ui_state->text_padding_stack.free);
+        StackPop(ui_ctx->text_padding_stack.free);
     }
     else
     {
         node = (UI_TextPaddingNode* )ArenaPush((UI_Arena()), sizeof(UI_TextPaddingNode));
     }
 
-    f32 old_value = ui_state->text_padding_stack.top->v;
+    f32 old_value = ui_ctx->text_padding_stack.top->v;
     node->v = v;
-    node->next = ui_state->text_padding_stack.top;
-    ui_state->text_padding_stack.top = node;
-    ui_state->text_padding_stack.pop_default = 0;
+    node->next = ui_ctx->text_padding_stack.top;
+    ui_ctx->text_padding_stack.top = node;
+    ui_ctx->text_padding_stack.pop_default = 0;
     
     return old_value;
 }
@@ -1520,122 +1402,33 @@ UI_SetTextPadding(f32 v)
 function UI_Key 
 UI_SetSeedKey(UI_Key v)
 {
-    UI_SeedKeyNode* node = ui_state->seed_key_stack.free;
+    UI_SeedKeyNode* node = ui_ctx->seed_key_stack.free;
     if (node)
     {
-        StackPop(ui_state->seed_key_stack.free);
+        StackPop(ui_ctx->seed_key_stack.free);
     }
     else
     {
         node = (UI_SeedKeyNode* )ArenaPush((UI_Arena()), sizeof(UI_SeedKeyNode));
     }
 
-    UI_Key old_value = ui_state->seed_key_stack.top->v;
+    UI_Key old_value = ui_ctx->seed_key_stack.top->v;
     node->v = v;
-    node->next = ui_state->seed_key_stack.top;
-    ui_state->seed_key_stack.top = node;
-    ui_state->seed_key_stack.pop_default = 0;
+    node->next = ui_ctx->seed_key_stack.top;
+    ui_ctx->seed_key_stack.top = node;
+    ui_ctx->seed_key_stack.pop_default = 0;
     
     return old_value;
 }
-
-function b32 
-UI_SetFocusHotSet(b32 v)
-{
-    UI_FocusHotSetNode* node = ui_state->focus_hot_set_stack.free;
-    if (node)
-    {
-        StackPop(ui_state->focus_hot_set_stack.free);
-    }
-    else
-    {
-        node = (UI_FocusHotSetNode* )ArenaPush((UI_Arena()), sizeof(UI_FocusHotSetNode));
-    }
-
-    b32 old_value = ui_state->focus_hot_set_stack.top->v;
-    node->v = v;
-    node->next = ui_state->focus_hot_set_stack.top;
-    ui_state->focus_hot_set_stack.top = node;
-    ui_state->focus_hot_set_stack.pop_default = 0;
-    
-    return old_value;
-}
-
-function b32 
-UI_SetFocusHotPossible(b32 v)
-{
-    UI_FocusHotPossibleNode* node = ui_state->focus_hot_possible_stack.free;
-    if (node)
-    {
-        StackPop(ui_state->focus_hot_possible_stack.free);
-    }
-    else
-    {
-        node = (UI_FocusHotPossibleNode* )ArenaPush((UI_Arena()), sizeof(UI_FocusHotPossibleNode));
-    }
-
-    b32 old_value = ui_state->focus_hot_possible_stack.top->v;
-    node->v = v;
-    node->next = ui_state->focus_hot_possible_stack.top;
-    ui_state->focus_hot_possible_stack.top = node;
-    ui_state->focus_hot_possible_stack.pop_default = 0;
-    
-    return old_value;
-}
-
-function b32 
-UI_SetFocusActiveSet(b32 v)
-{
-    UI_FocusActiveSetNode* node = ui_state->focus_active_set_stack.free;
-    if (node)
-    {
-        StackPop(ui_state->focus_active_set_stack.free);
-    }
-    else
-    {
-        node = (UI_FocusActiveSetNode* )ArenaPush((UI_Arena()), sizeof(UI_FocusActiveSetNode));
-    }
-
-    b32 old_value = ui_state->focus_active_set_stack.top->v;
-    node->v = v;
-    node->next = ui_state->focus_active_set_stack.top;
-    ui_state->focus_active_set_stack.top = node;
-    ui_state->focus_active_set_stack.pop_default = 0;
-    
-    return old_value;
-}
-
-function b32 
-UI_SetFocusActivePossible(b32 v)
-{
-    UI_FocusActivePossibleNode* node = ui_state->focus_active_possible_stack.free;
-    if (node)
-    {
-        StackPop(ui_state->focus_active_possible_stack.free);
-    }
-    else
-    {
-        node = (UI_FocusActivePossibleNode* )ArenaPush((UI_Arena()), sizeof(UI_FocusActivePossibleNode));
-    }
-
-    b32 old_value = ui_state->focus_active_possible_stack.top->v;
-    node->v = v;
-    node->next = ui_state->focus_active_possible_stack.top;
-    ui_state->focus_active_possible_stack.top = node;
-    ui_state->focus_active_possible_stack.pop_default = 0;
-    
-    return old_value;
-}
-
 
 function UI_Wig*
 UI_PopParent()
 {
-    UI_ParentNode* popped = ui_state->parent_stack.top;
-    if (popped != &ui_state->parent_nil)
+    UI_ParentNode* popped = ui_ctx->parent_stack.top;
+    if (popped != &ui_ctx->parent_nil)
     {
-        StackPop(ui_state->parent_stack.top);
-        StackPush(ui_state->parent_stack.free, popped);
+        StackPop(ui_ctx->parent_stack.top);
+        StackPush(ui_ctx->parent_stack.free, popped);
     }
 
     return popped->v;
@@ -1644,11 +1437,11 @@ UI_PopParent()
 function UI_WigFlags 
 UI_PopFlags()
 {
-    UI_FlagsNode* popped = ui_state->flags_stack.top;
-    if (popped != &ui_state->flags_nil)
+    UI_FlagsNode* popped = ui_ctx->flags_stack.top;
+    if (popped != &ui_ctx->flags_nil)
     {
-        StackPop(ui_state->flags_stack.top);
-        StackPush(ui_state->flags_stack.free, popped);
+        StackPop(ui_ctx->flags_stack.top);
+        StackPush(ui_ctx->flags_stack.free, popped);
     }
 
     return popped->v;
@@ -1657,11 +1450,11 @@ UI_PopFlags()
 function f32 
 UI_PopAbsoluteX()
 {
-    UI_AbsoluteXNode* popped = ui_state->absolute_x_stack.top;
-    if (popped != &ui_state->absolute_x_nil)
+    UI_AbsoluteXNode* popped = ui_ctx->absolute_x_stack.top;
+    if (popped != &ui_ctx->absolute_x_nil)
     {
-        StackPop(ui_state->absolute_x_stack.top);
-        StackPush(ui_state->absolute_x_stack.free, popped);
+        StackPop(ui_ctx->absolute_x_stack.top);
+        StackPush(ui_ctx->absolute_x_stack.free, popped);
     }
 
     return popped->v;
@@ -1670,11 +1463,11 @@ UI_PopAbsoluteX()
 function f32 
 UI_PopAbsoluteY()
 {
-    UI_AbsoluteYNode* popped = ui_state->absolute_y_stack.top;
-    if (popped != &ui_state->absolute_y_nil)
+    UI_AbsoluteYNode* popped = ui_ctx->absolute_y_stack.top;
+    if (popped != &ui_ctx->absolute_y_nil)
     {
-        StackPop(ui_state->absolute_y_stack.top);
-        StackPush(ui_state->absolute_y_stack.free, popped);
+        StackPop(ui_ctx->absolute_y_stack.top);
+        StackPush(ui_ctx->absolute_y_stack.free, popped);
     }
 
     return popped->v;
@@ -1683,11 +1476,11 @@ UI_PopAbsoluteY()
 function UI_Size 
 UI_PopDesiredWidth()
 {
-    UI_DesiredWidthNode* popped = ui_state->desired_width_stack.top;
-    if (popped != &ui_state->desired_width_nil)
+    UI_DesiredWidthNode* popped = ui_ctx->desired_width_stack.top;
+    if (popped != &ui_ctx->desired_width_nil)
     {
-        StackPop(ui_state->desired_width_stack.top);
-        StackPush(ui_state->desired_width_stack.free, popped);
+        StackPop(ui_ctx->desired_width_stack.top);
+        StackPush(ui_ctx->desired_width_stack.free, popped);
     }
 
     return popped->v;
@@ -1696,11 +1489,11 @@ UI_PopDesiredWidth()
 function UI_Size 
 UI_PopDesiredHeight()
 {
-    UI_DesiredHeightNode* popped = ui_state->desired_height_stack.top;
-    if (popped != &ui_state->desired_height_nil)
+    UI_DesiredHeightNode* popped = ui_ctx->desired_height_stack.top;
+    if (popped != &ui_ctx->desired_height_nil)
     {
-        StackPop(ui_state->desired_height_stack.top);
-        StackPush(ui_state->desired_height_stack.free, popped);
+        StackPop(ui_ctx->desired_height_stack.top);
+        StackPush(ui_ctx->desired_height_stack.free, popped);
     }
 
     return popped->v;
@@ -1709,11 +1502,11 @@ UI_PopDesiredHeight()
 function Vec4_f32 
 UI_PopColorText()
 {
-    UI_ColorTextNode* popped = ui_state->color_text_stack.top;
-    if (popped != &ui_state->color_text_nil)
+    UI_ColorTextNode* popped = ui_ctx->color_text_stack.top;
+    if (popped != &ui_ctx->color_text_nil)
     {
-        StackPop(ui_state->color_text_stack.top);
-        StackPush(ui_state->color_text_stack.free, popped);
+        StackPop(ui_ctx->color_text_stack.top);
+        StackPush(ui_ctx->color_text_stack.free, popped);
     }
 
     return popped->v;
@@ -1722,11 +1515,11 @@ UI_PopColorText()
 function Vec4_f32 
 UI_PopColorBackground()
 {
-    UI_ColorBackgroundNode* popped = ui_state->color_background_stack.top;
-    if (popped != &ui_state->color_background_nil)
+    UI_ColorBackgroundNode* popped = ui_ctx->color_background_stack.top;
+    if (popped != &ui_ctx->color_background_nil)
     {
-        StackPop(ui_state->color_background_stack.top);
-        StackPush(ui_state->color_background_stack.free, popped);
+        StackPop(ui_ctx->color_background_stack.top);
+        StackPush(ui_ctx->color_background_stack.free, popped);
     }
 
     return popped->v;
@@ -1735,11 +1528,11 @@ UI_PopColorBackground()
 function Vec4_f32 
 UI_PopColorBorder()
 {
-    UI_ColorBorderNode* popped = ui_state->color_border_stack.top;
-    if (popped != &ui_state->color_border_nil)
+    UI_ColorBorderNode* popped = ui_ctx->color_border_stack.top;
+    if (popped != &ui_ctx->color_border_nil)
     {
-        StackPop(ui_state->color_border_stack.top);
-        StackPush(ui_state->color_border_stack.free, popped);
+        StackPop(ui_ctx->color_border_stack.top);
+        StackPush(ui_ctx->color_border_stack.free, popped);
     }
 
     return popped->v;
@@ -1748,11 +1541,11 @@ UI_PopColorBorder()
 function Render_RegionTex2D_f32 
 UI_PopRegionf32()
 {
-    UI_Regionf32Node* popped = ui_state->regionf32_stack.top;
-    if (popped != &ui_state->regionf32_nil)
+    UI_Regionf32Node* popped = ui_ctx->regionf32_stack.top;
+    if (popped != &ui_ctx->regionf32_nil)
     {
-        StackPop(ui_state->regionf32_stack.top);
-        StackPush(ui_state->regionf32_stack.free, popped);
+        StackPop(ui_ctx->regionf32_stack.top);
+        StackPush(ui_ctx->regionf32_stack.free, popped);
     }
 
     return popped->v;
@@ -1761,11 +1554,11 @@ UI_PopRegionf32()
 function Font_Tag 
 UI_PopFont()
 {
-    UI_FontNode* popped = ui_state->font_stack.top;
-    if (popped != &ui_state->font_nil)
+    UI_FontNode* popped = ui_ctx->font_stack.top;
+    if (popped != &ui_ctx->font_nil)
     {
-        StackPop(ui_state->font_stack.top);
-        StackPush(ui_state->font_stack.free, popped);
+        StackPop(ui_ctx->font_stack.top);
+        StackPush(ui_ctx->font_stack.free, popped);
     }
 
     return popped->v;
@@ -1774,11 +1567,11 @@ UI_PopFont()
 function f32 
 UI_PopFontSize()
 {
-    UI_FontSizeNode* popped = ui_state->font_size_stack.top;
-    if (popped != &ui_state->font_size_nil)
+    UI_FontSizeNode* popped = ui_ctx->font_size_stack.top;
+    if (popped != &ui_ctx->font_size_nil)
     {
-        StackPop(ui_state->font_size_stack.top);
-        StackPush(ui_state->font_size_stack.free, popped);
+        StackPop(ui_ctx->font_size_stack.top);
+        StackPush(ui_ctx->font_size_stack.free, popped);
     }
 
     return popped->v;
@@ -1787,11 +1580,11 @@ UI_PopFontSize()
 function Axis2 
 UI_PopLayoutDirection()
 {
-    UI_LayoutDirectionNode* popped = ui_state->layout_direction_stack.top;
-    if (popped != &ui_state->layout_direction_nil)
+    UI_LayoutDirectionNode* popped = ui_ctx->layout_direction_stack.top;
+    if (popped != &ui_ctx->layout_direction_nil)
     {
-        StackPop(ui_state->layout_direction_stack.top);
-        StackPush(ui_state->layout_direction_stack.free, popped);
+        StackPop(ui_ctx->layout_direction_stack.top);
+        StackPush(ui_ctx->layout_direction_stack.free, popped);
     }
 
     return popped->v;
@@ -1800,11 +1593,11 @@ UI_PopLayoutDirection()
 function UI_Align 
 UI_PopTextAlignment()
 {
-    UI_TextAlignmentNode* popped = ui_state->text_alignment_stack.top;
-    if (popped != &ui_state->text_alignment_nil)
+    UI_TextAlignmentNode* popped = ui_ctx->text_alignment_stack.top;
+    if (popped != &ui_ctx->text_alignment_nil)
     {
-        StackPop(ui_state->text_alignment_stack.top);
-        StackPush(ui_state->text_alignment_stack.free, popped);
+        StackPop(ui_ctx->text_alignment_stack.top);
+        StackPush(ui_ctx->text_alignment_stack.free, popped);
     }
 
     return popped->v;
@@ -1813,11 +1606,11 @@ UI_PopTextAlignment()
 function f32 
 UI_PopTextPadding()
 {
-    UI_TextPaddingNode* popped = ui_state->text_padding_stack.top;
-    if (popped != &ui_state->text_padding_nil)
+    UI_TextPaddingNode* popped = ui_ctx->text_padding_stack.top;
+    if (popped != &ui_ctx->text_padding_nil)
     {
-        StackPop(ui_state->text_padding_stack.top);
-        StackPush(ui_state->text_padding_stack.free, popped);
+        StackPop(ui_ctx->text_padding_stack.top);
+        StackPush(ui_ctx->text_padding_stack.free, popped);
     }
 
     return popped->v;
@@ -1826,64 +1619,11 @@ UI_PopTextPadding()
 function UI_Key 
 UI_PopSeedKey()
 {
-    UI_SeedKeyNode* popped = ui_state->seed_key_stack.top;
-    if (popped != &ui_state->seed_key_nil)
+    UI_SeedKeyNode* popped = ui_ctx->seed_key_stack.top;
+    if (popped != &ui_ctx->seed_key_nil)
     {
-        StackPop(ui_state->seed_key_stack.top);
-        StackPush(ui_state->seed_key_stack.free, popped);
-    }
-
-    return popped->v;
-}
-
-function b32 
-UI_PopFocusHotSet()
-{
-    UI_FocusHotSetNode* popped = ui_state->focus_hot_set_stack.top;
-    if (popped != &ui_state->focus_hot_set_nil)
-    {
-        StackPop(ui_state->focus_hot_set_stack.top);
-        StackPush(ui_state->focus_hot_set_stack.free, popped);
-    }
-
-    return popped->v;
-}
-
-function b32 
-UI_PopFocusHotPossible()
-{
-    UI_FocusHotPossibleNode* popped = ui_state->focus_hot_possible_stack.top;
-    if (popped != &ui_state->focus_hot_possible_nil)
-    {
-        StackPop(ui_state->focus_hot_possible_stack.top);
-        StackPush(ui_state->focus_hot_possible_stack.free, popped);
-    }
-
-    return popped->v;
-}
-
-function b32 
-UI_PopFocusActiveSet()
-{
-    UI_FocusActiveSetNode* popped = ui_state->focus_active_set_stack.top;
-    if (popped != &ui_state->focus_active_set_nil)
-    {
-        StackPop(ui_state->focus_active_set_stack.top);
-        StackPush(ui_state->focus_active_set_stack.free, popped);
-    }
-
-    return popped->v;
-}
-
-function b32 
-UI_PopFocusActivePossible()
-{
-    UI_FocusActivePossibleNode* popped =
-        ui_state->focus_active_possible_stack.top;
-    if (popped != &ui_state->focus_active_possible_nil)
-    {
-        StackPop(ui_state->focus_active_possible_stack.top);
-        StackPush(ui_state->focus_active_possible_stack.free, popped);
+        StackPop(ui_ctx->seed_key_stack.top);
+        StackPush(ui_ctx->seed_key_stack.free, popped);
     }
 
     return popped->v;
@@ -1892,21 +1632,21 @@ UI_PopFocusActivePossible()
 function UI_Wig*
 UI_SetNextParent(UI_Wig* v)
 {
-    UI_ParentNode* node = ui_state->parent_stack.free;
+    UI_ParentNode* node = ui_ctx->parent_stack.free;
     if (node)
     {
-        StackPop(ui_state->parent_stack.free);
+        StackPop(ui_ctx->parent_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_ParentNode, 1);
     }
     
-    UI_Wig* old_value = ui_state->parent_stack.top->v;
+    UI_Wig* old_value = ui_ctx->parent_stack.top->v;
     node->v = v;
-    node->next = ui_state->parent_stack.top;
-    ui_state->parent_stack.top = node;
-    ui_state->parent_stack.pop_default = 1;
+    node->next = ui_ctx->parent_stack.top;
+    ui_ctx->parent_stack.top = node;
+    ui_ctx->parent_stack.pop_default = 1;
     
     return old_value;
 }
@@ -1914,21 +1654,21 @@ UI_SetNextParent(UI_Wig* v)
 function UI_WigFlags 
 UI_SetNextFlags(UI_WigFlags v)
 {
-    UI_FlagsNode* node = ui_state->flags_stack.free;
+    UI_FlagsNode* node = ui_ctx->flags_stack.free;
     if (node)
     {
-        StackPop(ui_state->flags_stack.free);
+        StackPop(ui_ctx->flags_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_FlagsNode, 1);
     }
     
-    UI_WigFlags old_value = ui_state->flags_stack.top->v;
+    UI_WigFlags old_value = ui_ctx->flags_stack.top->v;
     node->v = v;
-    node->next = ui_state->flags_stack.top;
-    ui_state->flags_stack.top = node;
-    ui_state->flags_stack.pop_default = 1;
+    node->next = ui_ctx->flags_stack.top;
+    ui_ctx->flags_stack.top = node;
+    ui_ctx->flags_stack.pop_default = 1;
     
     return old_value;
 }
@@ -1936,21 +1676,21 @@ UI_SetNextFlags(UI_WigFlags v)
 function f32 
 UI_SetNextAbsoluteX(f32 v)
 {
-    UI_AbsoluteXNode* node = ui_state->absolute_x_stack.free;
+    UI_AbsoluteXNode* node = ui_ctx->absolute_x_stack.free;
     if (node)
     {
-        StackPop(ui_state->absolute_x_stack.free);
+        StackPop(ui_ctx->absolute_x_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_AbsoluteXNode, 1);
     }
     
-    f32 old_value = ui_state->absolute_x_stack.top->v;
+    f32 old_value = ui_ctx->absolute_x_stack.top->v;
     node->v = v;
-    node->next = ui_state->absolute_x_stack.top;
-    ui_state->absolute_x_stack.top = node;
-    ui_state->absolute_x_stack.pop_default = 1;
+    node->next = ui_ctx->absolute_x_stack.top;
+    ui_ctx->absolute_x_stack.top = node;
+    ui_ctx->absolute_x_stack.pop_default = 1;
     
     return old_value;
 }
@@ -1958,21 +1698,21 @@ UI_SetNextAbsoluteX(f32 v)
 function f32 
 UI_SetNextAbsoluteY(f32 v)
 {
-    UI_AbsoluteYNode* node = ui_state->absolute_y_stack.free;
+    UI_AbsoluteYNode* node = ui_ctx->absolute_y_stack.free;
     if (node)
     {
-        StackPop(ui_state->absolute_y_stack.free);
+        StackPop(ui_ctx->absolute_y_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_AbsoluteYNode, 1);
     }
     
-    f32 old_value = ui_state->absolute_y_stack.top->v;
+    f32 old_value = ui_ctx->absolute_y_stack.top->v;
     node->v = v;
-    node->next = ui_state->absolute_y_stack.top;
-    ui_state->absolute_y_stack.top = node;
-    ui_state->absolute_y_stack.pop_default = 1;
+    node->next = ui_ctx->absolute_y_stack.top;
+    ui_ctx->absolute_y_stack.top = node;
+    ui_ctx->absolute_y_stack.pop_default = 1;
     
     return old_value;
 }
@@ -1980,21 +1720,21 @@ UI_SetNextAbsoluteY(f32 v)
 function UI_Size 
 UI_SetNextDesiredWidth(UI_Size v)
 {
-    UI_DesiredWidthNode* node = ui_state->desired_width_stack.free;
+    UI_DesiredWidthNode* node = ui_ctx->desired_width_stack.free;
     if (node)
     {
-        StackPop(ui_state->desired_width_stack.free);
+        StackPop(ui_ctx->desired_width_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_DesiredWidthNode, 1);
     }
     
-    UI_Size old_value = ui_state->desired_width_stack.top->v;
+    UI_Size old_value = ui_ctx->desired_width_stack.top->v;
     node->v = v;
-    node->next = ui_state->desired_width_stack.top;
-    ui_state->desired_width_stack.top = node;
-    ui_state->desired_width_stack.pop_default = 1;
+    node->next = ui_ctx->desired_width_stack.top;
+    ui_ctx->desired_width_stack.top = node;
+    ui_ctx->desired_width_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2002,21 +1742,21 @@ UI_SetNextDesiredWidth(UI_Size v)
 function UI_Size 
 UI_SetNextDesiredHeight(UI_Size v)
 {
-    UI_DesiredHeightNode* node = ui_state->desired_height_stack.free;
+    UI_DesiredHeightNode* node = ui_ctx->desired_height_stack.free;
     if (node)
     {
-        StackPop(ui_state->desired_height_stack.free);
+        StackPop(ui_ctx->desired_height_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_DesiredHeightNode, 1);
     }
     
-    UI_Size old_value = ui_state->desired_height_stack.top->v;
+    UI_Size old_value = ui_ctx->desired_height_stack.top->v;
     node->v = v;
-    node->next = ui_state->desired_height_stack.top;
-    ui_state->desired_height_stack.top = node;
-    ui_state->desired_height_stack.pop_default = 1;
+    node->next = ui_ctx->desired_height_stack.top;
+    ui_ctx->desired_height_stack.top = node;
+    ui_ctx->desired_height_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2024,21 +1764,21 @@ UI_SetNextDesiredHeight(UI_Size v)
 function Vec4_f32 
 UI_SetNextColorText(Vec4_f32 v)
 {
-    UI_ColorTextNode* node = ui_state->color_text_stack.free;
+    UI_ColorTextNode* node = ui_ctx->color_text_stack.free;
     if (node)
     {
-        StackPop(ui_state->color_text_stack.free);
+        StackPop(ui_ctx->color_text_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_ColorTextNode, 1);
     }
     
-    Vec4_f32 old_value = ui_state->color_text_stack.top->v;
+    Vec4_f32 old_value = ui_ctx->color_text_stack.top->v;
     node->v = v;
-    node->next = ui_state->color_text_stack.top;
-    ui_state->color_text_stack.top = node;
-    ui_state->color_text_stack.pop_default = 1;
+    node->next = ui_ctx->color_text_stack.top;
+    ui_ctx->color_text_stack.top = node;
+    ui_ctx->color_text_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2046,21 +1786,21 @@ UI_SetNextColorText(Vec4_f32 v)
 function Vec4_f32 
 UI_SetNextColorBackground(Vec4_f32 v)
 {
-    UI_ColorBackgroundNode* node = ui_state->color_background_stack.free;
+    UI_ColorBackgroundNode* node = ui_ctx->color_background_stack.free;
     if (node)
     {
-        StackPop(ui_state->color_background_stack.free);
+        StackPop(ui_ctx->color_background_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_ColorBackgroundNode, 1);
     }
     
-    Vec4_f32 old_value = ui_state->color_background_stack.top->v;
+    Vec4_f32 old_value = ui_ctx->color_background_stack.top->v;
     node->v = v;
-    node->next = ui_state->color_background_stack.top;
-    ui_state->color_background_stack.top = node;
-    ui_state->color_background_stack.pop_default = 1;
+    node->next = ui_ctx->color_background_stack.top;
+    ui_ctx->color_background_stack.top = node;
+    ui_ctx->color_background_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2068,21 +1808,21 @@ UI_SetNextColorBackground(Vec4_f32 v)
 function Vec4_f32 
 UI_SetNextColorBorder(Vec4_f32 v)
 {
-    UI_ColorBorderNode* node = ui_state->color_border_stack.free;
+    UI_ColorBorderNode* node = ui_ctx->color_border_stack.free;
     if (node)
     {
-        StackPop(ui_state->color_border_stack.free);
+        StackPop(ui_ctx->color_border_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_ColorBorderNode, 1);
     }
     
-    Vec4_f32 old_value = ui_state->color_border_stack.top->v;
+    Vec4_f32 old_value = ui_ctx->color_border_stack.top->v;
     node->v = v;
-    node->next = ui_state->color_border_stack.top;
-    ui_state->color_border_stack.top = node;
-    ui_state->color_border_stack.pop_default = 1;
+    node->next = ui_ctx->color_border_stack.top;
+    ui_ctx->color_border_stack.top = node;
+    ui_ctx->color_border_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2090,21 +1830,21 @@ UI_SetNextColorBorder(Vec4_f32 v)
 function Render_RegionTex2D_f32 
 UI_SetNextRegionf32(Render_RegionTex2D_f32 v)
 {
-    UI_Regionf32Node* node = ui_state->regionf32_stack.free;
+    UI_Regionf32Node* node = ui_ctx->regionf32_stack.free;
     if (node)
     {
-        StackPop(ui_state->regionf32_stack.free);
+        StackPop(ui_ctx->regionf32_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_Regionf32Node, 1);
     }
     
-    Render_RegionTex2D_f32 old_value = ui_state->regionf32_stack.top->v;
+    Render_RegionTex2D_f32 old_value = ui_ctx->regionf32_stack.top->v;
     node->v = v;
-    node->next = ui_state->regionf32_stack.top;
-    ui_state->regionf32_stack.top = node;
-    ui_state->regionf32_stack.pop_default = 1;
+    node->next = ui_ctx->regionf32_stack.top;
+    ui_ctx->regionf32_stack.top = node;
+    ui_ctx->regionf32_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2112,21 +1852,21 @@ UI_SetNextRegionf32(Render_RegionTex2D_f32 v)
 function Font_Tag 
 UI_SetNextFont(Font_Tag v)
 {
-    UI_FontNode* node = ui_state->font_stack.free;
+    UI_FontNode* node = ui_ctx->font_stack.free;
     if (node)
     {
-        StackPop(ui_state->font_stack.free);
+        StackPop(ui_ctx->font_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_FontNode, 1);
     }
     
-    Font_Tag old_value = ui_state->font_stack.top->v;
+    Font_Tag old_value = ui_ctx->font_stack.top->v;
     node->v = v;
-    node->next = ui_state->font_stack.top;
-    ui_state->font_stack.top = node;
-    ui_state->font_stack.pop_default = 1;
+    node->next = ui_ctx->font_stack.top;
+    ui_ctx->font_stack.top = node;
+    ui_ctx->font_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2134,21 +1874,21 @@ UI_SetNextFont(Font_Tag v)
 function f32 
 UI_SetNextFontSize(f32 v)
 {
-    UI_FontSizeNode* node = ui_state->font_size_stack.free;
+    UI_FontSizeNode* node = ui_ctx->font_size_stack.free;
     if (node)
     {
-        StackPop(ui_state->font_size_stack.free);
+        StackPop(ui_ctx->font_size_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_FontSizeNode, 1);
     }
     
-    f32 old_value = ui_state->font_size_stack.top->v;
+    f32 old_value = ui_ctx->font_size_stack.top->v;
     node->v = v;
-    node->next = ui_state->font_size_stack.top;
-    ui_state->font_size_stack.top = node;
-    ui_state->font_size_stack.pop_default = 1;
+    node->next = ui_ctx->font_size_stack.top;
+    ui_ctx->font_size_stack.top = node;
+    ui_ctx->font_size_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2156,21 +1896,21 @@ UI_SetNextFontSize(f32 v)
 function Axis2 
 UI_SetNextLayoutDirection(Axis2 v)
 {
-    UI_LayoutDirectionNode* node = ui_state->layout_direction_stack.free;
+    UI_LayoutDirectionNode* node = ui_ctx->layout_direction_stack.free;
     if (node)
     {
-        StackPop(ui_state->layout_direction_stack.free);
+        StackPop(ui_ctx->layout_direction_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_LayoutDirectionNode, 1);
     }
     
-    Axis2 old_value = ui_state->layout_direction_stack.top->v;
+    Axis2 old_value = ui_ctx->layout_direction_stack.top->v;
     node->v = v;
-    node->next = ui_state->layout_direction_stack.top;
-    ui_state->layout_direction_stack.top = node;
-    ui_state->layout_direction_stack.pop_default = 1;
+    node->next = ui_ctx->layout_direction_stack.top;
+    ui_ctx->layout_direction_stack.top = node;
+    ui_ctx->layout_direction_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2178,21 +1918,21 @@ UI_SetNextLayoutDirection(Axis2 v)
 function UI_Align 
 UI_SetNextTextAlignment(UI_Align v)
 {
-    UI_TextAlignmentNode* node = ui_state->text_alignment_stack.free;
+    UI_TextAlignmentNode* node = ui_ctx->text_alignment_stack.free;
     if (node)
     {
-        StackPop(ui_state->text_alignment_stack.free);
+        StackPop(ui_ctx->text_alignment_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_TextAlignmentNode, 1);
     }
     
-    UI_Align old_value = ui_state->text_alignment_stack.top->v;
+    UI_Align old_value = ui_ctx->text_alignment_stack.top->v;
     node->v = v;
-    node->next = ui_state->text_alignment_stack.top;
-    ui_state->text_alignment_stack.top = node;
-    ui_state->text_alignment_stack.pop_default = 1;
+    node->next = ui_ctx->text_alignment_stack.top;
+    ui_ctx->text_alignment_stack.top = node;
+    ui_ctx->text_alignment_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2200,21 +1940,21 @@ UI_SetNextTextAlignment(UI_Align v)
 function f32 
 UI_SetNextTextPadding(f32 v)
 {
-    UI_TextPaddingNode* node = ui_state->text_padding_stack.free;
+    UI_TextPaddingNode* node = ui_ctx->text_padding_stack.free;
     if (node)
     {
-        StackPop(ui_state->text_padding_stack.free);
+        StackPop(ui_ctx->text_padding_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_TextPaddingNode, 1);
     }
     
-    f32 old_value = ui_state->text_padding_stack.top->v;
+    f32 old_value = ui_ctx->text_padding_stack.top->v;
     node->v = v;
-    node->next = ui_state->text_padding_stack.top;
-    ui_state->text_padding_stack.top = node;
-    ui_state->text_padding_stack.pop_default = 1;
+    node->next = ui_ctx->text_padding_stack.top;
+    ui_ctx->text_padding_stack.top = node;
+    ui_ctx->text_padding_stack.pop_default = 1;
     
     return old_value;
 }
@@ -2222,109 +1962,21 @@ UI_SetNextTextPadding(f32 v)
 function UI_Key 
 UI_SetNextSeedKey(UI_Key v)
 {
-    UI_SeedKeyNode* node = ui_state->seed_key_stack.free;
+    UI_SeedKeyNode* node = ui_ctx->seed_key_stack.free;
     if (node)
     {
-        StackPop(ui_state->seed_key_stack.free);
+        StackPop(ui_ctx->seed_key_stack.free);
     }
     else
     {
         node = PushArray(UI_Arena(), UI_SeedKeyNode, 1);
     }
     
-    UI_Key old_value = ui_state->seed_key_stack.top->v;
+    UI_Key old_value = ui_ctx->seed_key_stack.top->v;
     node->v = v;
-    node->next = ui_state->seed_key_stack.top;
-    ui_state->seed_key_stack.top = node;
-    ui_state->seed_key_stack.pop_default = 1;
-    
-    return old_value;
-}
-
-function b32 
-UI_SetNextFocusHotSet(b32 v)
-{
-    UI_FocusHotSetNode* node = ui_state->focus_hot_set_stack.free;
-    if (node)
-    {
-        StackPop(ui_state->focus_hot_set_stack.free);
-    }
-    else
-    {
-        node = PushArray(UI_Arena(), UI_FocusHotSetNode, 1);
-    }
-    
-    b32 old_value = ui_state->focus_hot_set_stack.top->v;
-    node->v = v;
-    node->next = ui_state->focus_hot_set_stack.top;
-    ui_state->focus_hot_set_stack.top = node;
-    ui_state->focus_hot_set_stack.pop_default = 1;
-    
-    return old_value;
-}
-
-function b32 
-UI_SetNextFocusHotPossible(b32 v)
-{
-    UI_FocusHotPossibleNode* node = ui_state->focus_hot_possible_stack.free;
-    if (node)
-    {
-        StackPop(ui_state->focus_hot_possible_stack.free);
-    }
-    else
-    {
-        node = PushArray(UI_Arena(), UI_FocusHotPossibleNode, 1);
-    }
-    
-    b32 old_value = ui_state->focus_hot_possible_stack.top->v;
-    node->v = v;
-    node->next = ui_state->focus_hot_possible_stack.top;
-    ui_state->focus_hot_possible_stack.top = node;
-    ui_state->focus_hot_possible_stack.pop_default = 1;
-    
-    return old_value;
-}
-
-function b32 
-UI_SetNextFocusActiveSet(b32 v)
-{
-    UI_FocusActiveSetNode* node = ui_state->focus_active_set_stack.free;
-    if (node)
-    {
-        StackPop(ui_state->focus_active_set_stack.free);
-    }
-    else
-    {
-        node = PushArray(UI_Arena(), UI_FocusActiveSetNode, 1);
-    }
-    
-    b32 old_value = ui_state->focus_active_set_stack.top->v;
-    node->v = v;
-    node->next = ui_state->focus_active_set_stack.top;
-    ui_state->focus_active_set_stack.top = node;
-    ui_state->focus_active_set_stack.pop_default = 1;
-    
-    return old_value;
-}
-
-function b32 
-UI_SetNextFocusActivePossible(b32 v)
-{
-    UI_FocusActivePossibleNode* node = ui_state->focus_active_possible_stack.free;
-    if (node)
-    {
-        StackPop(ui_state->focus_active_possible_stack.free);
-    }
-    else
-    {
-        node = PushArray(UI_Arena(), UI_FocusActivePossibleNode, 1);
-    }
-    
-    b32 old_value = ui_state->focus_active_possible_stack.top->v;
-    node->v = v;
-    node->next = ui_state->focus_active_possible_stack.top;
-    ui_state->focus_active_possible_stack.top = node;
-    ui_state->focus_active_possible_stack.pop_default = 1;
+    node->next = ui_ctx->seed_key_stack.top;
+    ui_ctx->seed_key_stack.top = node;
+    ui_ctx->seed_key_stack.pop_default = 1;
     
     return old_value;
 }
