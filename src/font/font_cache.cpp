@@ -46,7 +46,7 @@ function Font_Hash
 Font_GetHash(Font_Tag tag, f32 size, Str8 string)
 {
     union {f32 f; u64 u;} size_u = {};
-    size_u.f = size;
+    MemoryCopy(&size_u, &size, sizeof(size));
     u64 buffer[] = { tag.v[0], tag.v[1], size_u.u };
 
     Font_Hash result = {};
@@ -118,7 +118,7 @@ Font_GetRun(Arena* arena, Font_Tag font, f32 size, Str8 string)
         if (offset > prev_offset)
         {
             //
-            // (off - cache_start_off) is the size of the next "chunk" to raster at string.str + cache_start_off
+            // (off - prev_offset) is the size of the next "chunk" to raster at string.str + prev_offset
             //
             Str8 hash_portion = String8(string.str + prev_offset, offset - prev_offset);
             prev_offset = offset;

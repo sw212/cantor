@@ -65,13 +65,21 @@ EntryPoint()
                 {
                     UI_Begin(window_handle, &events);
                     {
-                        UI_SetFontSize(8.f);
+                        UI_SetFontSize(9.f);
 
                         UI_DesiredHeight(UI_Pixels(100.f, 1.f))
                         UI_DesiredWidth(UI_Pixels(200.f, 1.f))
                         {
-                            UI_Text("Text_1");
+                            UI_SetColorBackground({.1f, .1f, .1f, 1.f});
+                            UI_SetTextAlignment(UI_Align_Center);
+                            {
+                                UI_Button("Text_1");
+                            }
+                            UI_PopTextAlignment();
+                            UI_PopColorBackground();
+
                             UI_Space(UI_Pixels(10.f, 0.f));
+
                             if (UI_Button("Button_1").clicked)
                             {
                                 UI_Text("Clicked");

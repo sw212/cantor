@@ -26,8 +26,8 @@ struct Font_Core_Metrics
 
 struct Font_Core_RasterResult
 {
-    Vec2_i64 atlas_dim;
     void*    atlas;
+    Vec2_i64 atlas_dim;
     f32      advance;
     i16      height;
 };

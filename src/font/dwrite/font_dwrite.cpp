@@ -265,7 +265,7 @@ Font_Core_Raster(Arena* arena, Font_Core_Hnd handle, f32 size, Str8 string)
     DWRITE_GLYPH_METRICS* glyphs_metrics = PushArrayNZ(scratch.arena, DWRITE_GLYPH_METRICS, glyphs_count);
     if(font.face)
     {
-        hresult = font.face->GetGdiCompatibleGlyphMetrics(size, 1.f, 0, 1, glyph_indices, u32(glyphs_count), glyphs_metrics, 0);
+        hresult = font.face->GetGdiCompatibleGlyphMetrics(size * (96.f/72.f), 1.f, 0, 1, glyph_indices, u32(glyphs_count), glyphs_metrics, 0);
     }
 
     f32      advance   = 0;
@@ -280,13 +280,13 @@ Font_Core_Raster(Arena* arena, Font_Core_Hnd handle, f32 size, Str8 string)
             f32 glyph_advance_width  = (96.f/72.f) * size * f32(glyph_metrics->advanceWidth)   / design_units_per_em;
             f32 glyph_advance_height = (96.f/72.f) * size * f32(glyph_metrics->advanceHeight)  / design_units_per_em;
 
-            advance    += (f32)i64(glyph_advance_width);
-            atlas_dim.x = i64(Max(f32(atlas_dim.x), advance));
+            advance    += glyph_advance_width;
+            atlas_dim.x = Max(atlas_dim.x, i64(advance + 1));
         }
 
         atlas_dim.x  = ((atlas_dim.x + 7) / 8) * 8;
         atlas_dim.x += 4;
-        atlas_dim.y += 2;
+        atlas_dim.y += 4;
     }
 
     IDWriteBitmapRenderTarget* render_target = 0;
@@ -329,11 +329,11 @@ Font_Core_Raster(Arena* arena, Font_Core_Hnd handle, f32 size, Str8 string)
     if(font.face)
     {
         hresult = render_target->DrawGlyphRun(draw_at.x, draw_at.y,
-                                            DWRITE_MEASURING_MODE_NATURAL,
-                                            &glyph_run,
-                                            font_dwrite_state->render_params,
-                                            foreground,
-                                            &bbox);
+                                              DWRITE_MEASURING_MODE_NATURAL,
+                                              &glyph_run,
+                                              font_dwrite_state->render_params,
+                                              foreground,
+                                              &bbox);
     }
 
     DIBSECTION dib_section = {};
@@ -349,7 +349,7 @@ Font_Core_Raster(Arena* arena, Font_Core_Hnd handle, f32 size, Str8 string)
         result.atlas_dim = atlas_dim;
         result.atlas     = PushArrayNZ(arena, u8, atlas_dim.x*atlas_dim.y*4);
         result.advance   = advance;
-        result.height    = i16(f32(bbox.bottom) + 4.f);
+        result.height    = i16(bbox.bottom + 1);
 
         {
             u8* src = (u8*)dib_section.dsBm.bmBits;
@@ -363,7 +363,7 @@ Font_Core_Raster(Arena* arena, Font_Core_Hnd handle, f32 size, Str8 string)
 
             for(i64 y = 0; y < atlas_dim.y; y++)
             {
-                u8* src_at  = src_row;
+                u8* src_at = src_row;
                 u8* dst_at = dst_row;
 
                 for(i64 x = 0; x < atlas_dim.x; x++)
