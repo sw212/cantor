@@ -35,8 +35,8 @@ EntryPoint()
 
     UI_Ctx* ui = UI_Initialise();
 
-    Vec2_i32      window_dims  = {1280, 720};
-    Str8          window_title = StringLiteral("Application");
+    Vec2_i32 window_dims  = {1280, 720};
+    Str8     window_title = StringLiteral("Application");
 
     Sys_Hnd    window_handle        = Sys_InitWindow(window_dims, window_title);
     Render_Hnd window_render_handle = Render_Attach(window_handle);
@@ -48,7 +48,8 @@ EntryPoint()
     {
         Scratch scratch = ScratchBegin(0, 0);
 
-        Sys_EventList events = Sys_GetEvents(scratch.arena);
+        Sys_EventList sys_events = Sys_GetEvents(scratch.arena);
+        UI_EventList   ui_events = UI_EventListFromSysEvents(scratch.arena, window_handle, sys_events);
 
         {
             Rect2_f32 client_rect = Sys_GetClientRect(window_handle);

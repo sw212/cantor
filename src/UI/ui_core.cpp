@@ -27,8 +27,8 @@ UI_Window()
     return ui_ctx->window;
 }
 
-function Sys_EventList*
-UI_EventList()
+function UI_EventList*
+UI_Events()
 {
     return ui_ctx->event_list;
 }
@@ -157,6 +157,85 @@ function void
 UI_End()
 {
     UI_PopParent();
+}
+
+
+function UI_Event*
+UI_EventPush(Arena* arena, UI_EventList* event_list)
+{
+    UI_EventItem* item = PushArray(arena, UI_EventItem, 1);
+    UI_Event* result = &item->event;
+
+    event_list->count++;
+    DLLPushBack(event_list->first, event_list->last, item);
+
+    return result;
+}
+
+function void
+UI_ConsumeEvent(UI_EventList* event_list, UI_EventItem* event)
+{
+    DLLRemove(event_list->first, event_list->last, event);
+    event_list->count--;
+}
+
+function UI_EventType
+UI_EventTypeFromSysEvent(Sys_EventType type)
+{
+    UI_EventType result = UI_Event_NOP;
+
+    switch (type)
+    {
+        case Sys_Event_Press:   { result = UI_Event_Press;   } break;
+        case Sys_Event_Release: { result = UI_Event_Release; } break;
+        case Sys_Event_Key:     { result = UI_Event_Key;     } break;
+        default: break;
+    }
+
+    return result;
+}
+
+function UI_EventList
+UI_EventListFromSysEvents(Arena* arena, Sys_Hnd window, Sys_EventList* sys_events)
+{
+    UI_EventList result = {};
+
+    for (Sys_Event* se = sys_events->first; se != 0; se = se->next)
+    {
+        if (!Sys_HndMatch(se->window, window))
+        {
+            continue;
+        }
+
+        b32 consume = 0;
+
+        // TODO: special keys (e.g. ESC)?
+
+        // general keys
+        if (!consume && se->type == Sys_Event_Key)
+        {
+            UI_Event* e = UI_EventPush(arena, &result);
+            e->type = UI_Event_Key;
+            e->string = String8(arena, String32(&se->character, 1)); 
+        }
+
+        if (!consume && (se->type == Sys_Event_Press || se->type == Sys_Event_Release))
+        {
+            consume = 1;
+            UI_Event* e = UI_EventPush(arena, &result);
+            e->type = UI_EventTypeFromSysEvent(se->type);
+            e->key  = se->key;
+            e->modifiers = se->modifiers;
+            e->position  = se->position;
+        }
+
+        if (consume)
+        {
+            Sys_ConsumeEvent(sys_events, se);
+        }
+    }
+
+    return result;
 }
 
 function b32
@@ -745,6 +824,146 @@ UI_GetAction(UI_Wig* wig)
 {
     UI_Action result = {};
     result.wig = wig;
+    UI_EventList* event_list = UI_Events();
+    Rect2_f32 rect = wig->rect;
+
+    // clipping
+    Rect2_f32 clip_rect = wig->rect;
+    for (UI_Wig* parent = wig->parent; !UI_IsNil(parent); parent = parent->parent)
+    {
+        if (parent->flags & UI_Wig_Clip)
+        {
+            clip_rect = Intersection(clip_rect, parent->rect);
+        }
+    }
+
+    // event handling
+    for(UI_EventItem* event_item = event_list->first; event_item != 0; event_item = event_item->next)
+    {
+        b32 consume = 0;
+
+        UI_Event* event = &event_item->event;
+
+        b32 is_mouse_event = (event->key == Sys_Key_MouseLeft || event->key == Sys_Key_MouseRight);
+        b32 event_in_clip_rect = Contains(clip_rect, event->position);
+
+        // if can mouse interact && wig was not created this frame
+        if (wig->flags & UI_Wig_AllowMouse && wig->init_generation != wig->curr_generation)
+        {
+            // mouse down event inside wig
+            if (is_mouse_event && event_in_clip_rect && event->type == UI_Event_Press)
+            {
+                consume = 1;
+                ui_ctx->hot = wig->key;
+
+                if (event->key == Sys_Key_MouseLeft)
+                {
+                    ui_ctx->active[UI_MouseButton_Left] = wig->key;
+                    ui_ctx->drag_start_pos = event->position;
+                    result.left_pressed = 1;
+                }
+                if (event->key == Sys_Key_MouseRight)
+                {
+                    ui_ctx->active[UI_MouseButton_Right] = wig->key;
+                    result.right_pressed = 1;
+                }
+            }
+
+            // mouse button release for active wig
+            if (is_mouse_event && event->type == UI_Event_Release)
+            {
+                if (UI_MatchKey(ui_ctx->active[UI_MouseButton_Left], wig->key))
+                {
+                    consume = 1;
+                    result.left_released = 1;
+                    
+                    if (event_in_clip_rect)
+                    {
+                        result.left_pressed = 1;
+                    }
+
+                    ui_ctx->active[UI_MouseButton_Left] = UI_ZeroKey();
+                }
+
+                if (UI_MatchKey(ui_ctx->active[UI_MouseButton_Right], wig->key))
+                {
+                    consume = 1;
+                    result.right_released = 1;
+                    
+                    if (event_in_clip_rect)
+                    {
+                        result.right_pressed = 1;
+                    }
+
+                    ui_ctx->active[UI_MouseButton_Right] = UI_ZeroKey();
+                }
+            }
+        }
+
+        if (consume)
+        {
+            UI_ConsumeEvent(event_list, event);
+        }
+    }
+
+    Vec2_f32 mouse_pos = UI_Mouse();
+    b32 mouse_in_clip_rect = Contains(clip_rect, mouse_pos);
+    // if there is:
+    //  no curr hot && no curr active && mouse is over -> set hot
+    if (mouse_in_clip_rect)
+    {
+        result.mouse_is_over = 1;
+
+        if (UI_MatchKey(ui_ctx->hot, UI_ZeroKey())) // no curr hot wig
+        {
+            result.hovering = 1;
+
+            u32 active_wig = 0;
+
+            for (UI_MouseButtonType mb = UI_MouseButtonType(0); mb < UI_MouseButton_Count; mb = UI_MouseButtonType(mb + 1))
+            {
+                if (!UI_MatchKey(ui_ctx->active[mb], UI_ZeroKey()))
+                {
+                    active_wig = 1;
+                    break;
+                }
+            }
+
+            if (!active_wig) // no curr active wig ( for any mouse button )
+            {
+                ui_ctx->hot = wig->key;
+            }
+        }
+    }
+    // wig is hot && does not contain mouse -> clear hot
+    else if (UI_MatchKey(ui_ctx->hot, wig->key))
+    {
+        ui_ctx->hot = UI_ZeroKey();
+    }
+
+    if (wig->flags & UI_Wig_AllowMouse)
+    {
+        if (UI_MatchKey(ui_ctx->active[UI_MouseButton_Left], wig->key))
+        {
+            result.left_dragging = 1;
+            ui_ctx->hot = wig->key;
+        }
+
+        if (UI_MatchKey(ui_ctx->active[UI_MouseButton_Right], wig->key))
+        {
+            result.right_dragging = 1;
+            ui_ctx->hot = wig->key;
+        }
+    }
+
+    return result;
+}
+
+function UI_Action
+UI_GetActionOld(UI_Wig* wig)
+{
+    UI_Action result = {};
+    result.wig = wig;
 
     Rect2_f32 rect = wig->rect;
     Vec2_f32 mouse_pos = UI_Mouse();
@@ -752,11 +971,11 @@ UI_GetAction(UI_Wig* wig)
 
     // clipping
     {
-        Rect2_f32 clip_rect = Sys_GetClientRect(UI_Window());
+        Rect2_f32 clip_rect = wig->rect;
 
         for (UI_Wig* parent = wig->parent; !UI_IsNil(parent); parent = parent->parent)
         {
-            if (parent->flags &UI_Wig_Clip)
+            if (parent->flags & UI_Wig_Clip)
             {
                 clip_rect = Intersection(clip_rect, parent->rect);
             }
@@ -771,7 +990,7 @@ UI_GetAction(UI_Wig* wig)
     result.mouse_is_over = u8(wig_contains_mouse);
 
     // mouse events
-    if (wig->init_generation != wig->curr_generation && wig->flags &UI_Wig_AllowMouse)
+    if (wig->init_generation != wig->curr_generation && wig->flags & UI_Wig_AllowMouse)
     {
         Sys_Event* left_pressed = 0;
         Sys_Event* right_pressed = 0;

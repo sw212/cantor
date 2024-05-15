@@ -86,6 +86,11 @@ UI_Draw()
             Draw_PushClip(new_clip);
         }
 
+        if (wig->flags & UI_Wig_Custom)
+        {
+            wig->custom.fn(wig);
+        }
+
         // pop any "pushed" wig clip rects from stack when we traverse tree upwards (that is, upwards on this iteration)
         if (!traverse_ctx.push_count)
         {

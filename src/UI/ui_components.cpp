@@ -126,3 +126,26 @@ UI_RowEnd()
 {
     UI_PopParent();
 }
+
+//
+// struct UI_CustomData ?
+UI_DRAW_CUSTOM(UI_DrawCustomComponent)
+{
+
+}
+
+function void
+UI_CustomComponent()
+{
+    UI_Wig* wig = UI_WigCreate(UI_Wig_AllowMouse, StringLiteral("custom"));
+    UI_Action action = UI_GetAction(wig);
+
+    wig->flags |= UI_Wig_Custom;
+    wig->custom =
+    {
+        .fn = UI_DrawCustomComponent,
+        .data = (void*)1,
+    };
+}
+
+

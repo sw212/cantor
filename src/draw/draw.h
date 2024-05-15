@@ -102,8 +102,9 @@ read_only static Draw_Clip            draw_nil_clip = {0, {}};
 read_only static Draw_Opacity    draw_nil_opacity = {0, 1.f};
 
 
-function Arena* Draw_GetArena();
+function u64 Draw_Hash(Buf8 data);
 
+function Arena*        Draw_GetArena();
 function Draw_Context* Draw_GetContext();
 function Draw_Context* Draw_MakeContext(Arena* arena);
 
@@ -117,6 +118,7 @@ function Render_Pass* Draw_GetPass(Arena* arena, Draw_Context* context, Render_P
 
 function Render_Rect2D* Draw_Rect(Rect2_f32 rect, Draw_RectParams* p);
 function f32            Draw_Text(Vec2_f32  position, Font_Tag font, f32 size, Vec4_f32 color, Str8 string);
+function Render_Mesh3D* Draw_Mesh(Render_Hnd vertices, Render_Hnd indices, Render_Hnd texture, Mat4x4_f32 transform, Render_VertexFlags flags);
 
 function void Draw_InitialiseThread();
 function void Draw_Initialise();

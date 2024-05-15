@@ -28,6 +28,16 @@ Render_D3D11_GetFormat(Render_Tex2DType fmt)
     return result;
 }
 
+function Render_D3D11_Buffer
+Render_D3D11_GetBuffer(Render_Hnd handle)
+{
+    Render_D3D11_Buffer result = {};
+    result.obj  = (ID3D11Buffer*)handle.v_64[0];
+    result.size = handle.v_64[1];
+
+    return result; 
+}
+
 function Render_D3D11_Tex2D
 Render_D3D11_GetTex2D(Render_Hnd handle)
 {
@@ -285,6 +295,42 @@ Render_WindowSubmit(Render_Hnd render_window, Render_PassList* render_passes)
             switch (pass->pass_type)
             {
                 default: { } break;
+
+                case Render_PassType_3D:
+                {
+                    Render_Pass_3D* geom = pass->geom;
+                    Render_Collection3D meshes = geom->meshes;
+
+                    Rect2_f32 viewport = geom->viewport;
+                    D3D11_VIEWPORT d3d11_viewport =
+                    {
+                        .TopLeftX = viewport.min.x,
+                        .TopLeftY = viewport.max.y,
+                        .Width    = viewport.max.x - viewport.min.x,
+                        .Height   = viewport.max.y - viewport.min.y,
+                        .MinDepth = 0.f,
+                        .MaxDepth = 1.f,
+                    };
+
+                    ctx->RSSetViewports(1, &d3d11_viewport);
+                    ctx->RSSetState(render_d3d11_state->rasterizer);
+
+                    f32 clear_rtv_color[4] = {};
+                    ctx->ClearRenderTargetView(w->geometry_color_rtv, clear_rtv_color);
+                    ctx->ClearDepthStencilView(w->geometry_depth_dsv, D3D11_CLEAR_DEPTH, 1.f, 0);
+
+                    ctx->OMSetRenderTargets(1, &w->geometry_color_rtv, w->geometry_depth_dsv);
+                    ctx->OMSetBlendState(render_d3d11_state->blend_state_default, 0, 0xFFFFFFFF);
+                    ctx->OMSetDepthStencilState(render_d3d11_state->plain_ds_state, 0);
+
+                    // TODO
+                    ID3D11Buffer*          cmd_buffer = 0;
+                    ID3D11VertexShader* vertex_shader = 0;
+                    ID3D11PixelShader*   pixel_shader = 0;
+                    ID3D11InputLayout*   input_layout = 0;
+
+                    // TODO: draw mesh batches
+                } break;
 
                 case Render_PassType_UI:
                 {

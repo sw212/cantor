@@ -81,11 +81,11 @@ enum Render_D3D11_ShaderType
 
 struct Render_D3D11_Tex2D
 {
- ID3D11Texture2D* texture;
- ID3D11ShaderResourceView* view;
- Vec2_i32 size;
- Render_Tex2DType format;
- Render_Tex2DUsageType kind;
+    ID3D11Texture2D* texture;
+    ID3D11ShaderResourceView* view;
+    Vec2_i32 size;
+    Render_Tex2DType format;
+    Render_Tex2DUsageType kind;
 };
 
 struct Render_D3D11_Buffer
@@ -156,21 +156,31 @@ struct Render_D3D11_WindowAttach
     ID3D11Texture2D*          gbuffer_color;
     ID3D11RenderTargetView*   gbuffer_color_rtv;
     ID3D11ShaderResourceView* gbuffer_color_srv;
+
     ID3D11Texture2D*          gbuffer_depth;
     ID3D11DepthStencilView*   gbuffer_depth_dsv;
     ID3D11ShaderResourceView* gbuffer_depth_srv;
 
-    ID3D11Texture2D*          gbuffer_scratch_color;
-    ID3D11RenderTargetView*   gbuffer_scratch_color_rtv;
-    ID3D11ShaderResourceView* gbuffer_scratch_color_srv;
+    ID3D11Texture2D*          geometry_color;
+    ID3D11RenderTargetView*   geometry_color_rtv;
+    ID3D11ShaderResourceView* geometry_color_srv;
+
+    ID3D11Texture2D*          geometry_depth;
+    ID3D11DepthStencilView*   geometry_depth_dsv;
+    ID3D11ShaderResourceView* geometry_depth_srv;
+
+    // ID3D11Texture2D*          gbuffer_scratch_color;
+    // ID3D11RenderTargetView*   gbuffer_scratch_color_rtv;
+    // ID3D11ShaderResourceView* gbuffer_scratch_color_srv;
 
     Vec2_i64 prev_resolution;
 };
 
 function DXGI_FORMAT Render_D3D11_GetFormat(Render_Tex2DType fmt);
 
-function Render_D3D11_Tex2D Render_D3D11_GetTex2D(Render_Hnd handle);
-function Render_Hnd         Render_D3D11_GetHandle(Render_D3D11_Tex2D texture);
+function Render_D3D11_Buffer Render_D3D11_GetBuffer(Render_Hnd handle);
+function Render_D3D11_Tex2D  Render_D3D11_GetTex2D(Render_Hnd handle);
+function Render_Hnd          Render_D3D11_GetHandle(Render_D3D11_Tex2D texture);
 
 function Render_D3D11_WindowAttach* Render_D3D11_GetWindowAttach(Render_Hnd handle);
 function Render_Hnd                 Render_D3D11_GetHandle(Render_D3D11_WindowAttach* render_window);

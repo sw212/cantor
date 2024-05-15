@@ -85,6 +85,24 @@ String8(Arena* arena, Str16 string)
 }
 
 function Str8
+String8(Arena* arena, Str32 string)
+{
+    u64 size = string.size;
+    u8* str = PushArray(arena, u8, size + 1);
+
+    u8 at  = 0;
+    while(at < size)
+    {
+        str[at] = u8(string.str[at]);
+        at++;
+    }
+    str[size] = 0;
+
+    Str8 result = {str, size};
+    return result;
+}
+
+function Str8
 String8(char* str)
 {
     Str8 result = String8((u8*)str, StrLength(str));
@@ -125,6 +143,16 @@ String16(u16* str)
 {
     Str16 result = String16(str, StrLength(str));
     
+    return result;
+}
+
+function Str32
+String32(u32* str, u64 size)
+{
+    Str32 result = {};
+    result.str  = str;
+    result.size = size;
+
     return result;
 }
 

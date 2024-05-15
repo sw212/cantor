@@ -7,6 +7,14 @@ union Render_Hnd
     u32 v_32[8];
 };
 
+typedef u32 Render_VertexFlags;
+enum Render_VertexType
+{
+    Render_Vertex_Normals = (1<<0),
+    Render_Vertex_UVs     = (1<<1),
+    Render_Vertex_Colors  = (1<<2),
+};
+
 enum Render_BlendType
 {
     Render_Blend_Normal,
@@ -57,6 +65,11 @@ struct Render_Rect2D
     f32 _pad;
 };
 
+struct Render_Mesh3D
+{
+    Mat4x4_f32 transform;
+};
+
 struct Render_Group
 {
     Render_Group* next;
@@ -97,11 +110,37 @@ struct Render_Collection2DList
     u64 count;
 };
 
+struct Render_Collection3DParams
+{
+    Render_Hnd vertices;
+    Render_Hnd indices;
+    Render_Hnd texture;
+    Mat4x4_f32 transform;
+    Render_VertexFlags flags;
+    Render_Sampler2DType sampler;
+};
+
+struct Render_Collection3DItem
+{
+    Render_Collection3DItem*  next;
+    Render_GroupList          groups;
+    Render_Collection3DParams params;
+
+    u64 hash;
+};
+
+struct Render_Collection3D
+{
+    Render_Collection3DItem** items;
+    u64 count;
+};
+
 
 enum Render_PassType
 {
     Render_PassType_Null,
     Render_PassType_UI,
+    Render_PassType_3D,
     Render_PassType_Count,
 };
 
@@ -109,6 +148,17 @@ struct Render_Pass_UI
 {
     Rect2_f32 viewport; // TODO: is this needed?
     Render_Collection2DList rects;
+};
+
+struct Render_Pass_3D
+{
+    Rect2_f32 viewport;
+    Rect2_f32 clip;
+    
+    Mat4x4_f32 view;
+    Mat4x4_f32 proj;
+
+    Render_Collection3D meshes;
 };
 
 struct Render_Pass
@@ -119,6 +169,7 @@ struct Render_Pass
     {
         void* params;
         Render_Pass_UI* ui;
+        Render_Pass_3D* geom;
     };
 };
 

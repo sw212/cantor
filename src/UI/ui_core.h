@@ -6,6 +6,47 @@ struct UI_Key
     u64 v[1];
 };
 
+enum UI_MouseButtonType
+{
+    UI_MouseButton_Left,
+    UI_MouseButton_Right,
+    UI_MouseButton_Count,
+};
+
+enum UI_EventType
+{
+    UI_Event_NOP,
+    UI_Event_Press,
+    UI_Event_Release,
+    UI_Event_Key,
+    UI_EventType_Count,
+};
+
+struct UI_Event
+{
+    UI_EventType   type;
+
+    Sys_Key key;
+    Sys_KeyModifier modifiers;
+
+    Vec2_f32 position;
+    Str8 string;
+};
+
+struct UI_EventItem
+{
+    UI_Event event;
+    UI_EventItem* next;
+    UI_EventItem* prev;
+};
+
+struct UI_EventList
+{
+    u64 count;
+    UI_EventItem* first;
+    UI_EventItem* last;
+};
+
 enum UI_SizeType
 {
     UI_Size_Px,       // pixels
@@ -37,16 +78,18 @@ enum
    UI_Wig_AllowMouse            = (1<<1),
    UI_Wig_AllowKey              = (1<<2),
 
-   UI_Wig_FloatX                = (1<<8),
-   UI_Wig_FloatY                = (1<<9),
-   UI_Wig_OverflowX             = (1<<10),
-   UI_Wig_OverflowY             = (1<<11),
+   UI_Wig_FloatX                = (1<<3),
+   UI_Wig_FloatY                = (1<<4),
+   UI_Wig_OverflowX             = (1<<5),
+   UI_Wig_OverflowY             = (1<<6),
 
-   UI_Wig_Clip                  = (1<<12),
-   UI_Wig_IgnoreTruncate        = (1<<13),
-   UI_Wig_IgnoreHash            = (1<<14),
-   UI_Wig_HasText               = (1<<16),
-   UI_Wig_DrawBG                = (1<<19),
+   UI_Wig_Clip                  = (1<<7),
+   UI_Wig_IgnoreTruncate        = (1<<8),
+   UI_Wig_IgnoreHash            = (1<<9),
+   UI_Wig_HasText               = (1<<10),
+   UI_Wig_DrawBG                = (1<<11),
+
+   UI_Wig_Custom                = (1<<12),
 
    UI_Wig_Floating  = UI_Wig_FloatX | UI_Wig_FloatY,
    UI_Wig_Interactable = UI_Wig_AllowMouse | UI_Wig_AllowKey,
@@ -77,6 +120,14 @@ struct UI_WigBucket
     f32 bucket_anchor_weights[Corner_Count];
 };
 
+#define UI_DRAW_CUSTOM(name) void name(struct UI_Wig* wig)
+typedef UI_DRAW_CUSTOM(UI_DrawCustomFn);
+struct UI_WigCustom
+{
+    UI_DrawCustomFn* fn;
+    void* data;
+};
+
 struct UI_Wig
 {
     UI_Wig* next;
@@ -103,6 +154,8 @@ struct UI_Wig
     f32           opacity;
     UI_WigStyle*  style;
     UI_WigBucket* bucket;
+    UI_WigCustom  custom;
+
 
     Vec2_f32 calculated_size;
     Vec2_f32 relative_pos; // to parent
@@ -132,18 +185,18 @@ struct UI_WigTraversal
 struct UI_Action
 {
     UI_Wig* wig;
-    u8 clicked          : 1;
-    u8 pressed          : 1;
-    u8 released         : 1;
-    u8 dragging         : 1;
-    u8 double_clicked   : 1;
-    u8 right_clicked    : 1;
-    u8 right_pressed    : 1;
-    u8 right_released   : 1;
-    u8 right_dragging   : 1;
-    u8 hovering         : 1;
-    u8 mouse_is_over    : 1;
-    u8 keyboard_pressed : 1;
+    u8 left_clicked        : 1;
+    u8 left_pressed        : 1;
+    u8 left_released       : 1;
+    u8 left_dragging       : 1;
+    u8 left_double_clicked : 1;
+    u8 right_clicked       : 1;
+    u8 right_pressed       : 1;
+    u8 right_released      : 1;
+    u8 right_dragging      : 1;
+    u8 hovering            : 1;
+    u8 mouse_is_over       : 1;
+    u8 keyboard_pressed    : 1;
     Sys_KeyModifier modifiers;
 };
 
@@ -199,8 +252,8 @@ struct UI_Ctx
     UI_Wig* root;
     u64     generation;
 
-    Sys_Hnd        window;
-    Sys_EventList* event_list;
+    Sys_Hnd       window;
+    UI_EventList* event_list;
 
     Vec2_f32 mouse_pos;
     Vec2_f32 drag_start_pos;
@@ -208,8 +261,7 @@ struct UI_Ctx
     Str8     drag_store;
 
     UI_Key hot;
-    UI_Key active[Side_Count];
-    b32    frame_has_hot;
+    UI_Key active[UI_MouseButton_Count];
     b32    clear_hot_active;
 
     UI_Wig* free_wig;
@@ -275,17 +327,22 @@ struct UI_Ctx
 };
 
 
-function Arena*         UI_Arena();
-function UI_Wig*        UI_Root();
-function Sys_Hnd        UI_Window();
-function Sys_EventList* UI_EventList();
-function Vec2_f32       UI_Mouse();
+function Arena*        UI_Arena();
+function UI_Wig*       UI_Root();
+function Sys_Hnd       UI_Window();
+function UI_EventList* UI_Events();
+function Vec2_f32      UI_Mouse();
 
 function UI_Ctx* UI_Initialise();
-function void      UI_SetState(UI_Ctx* ui_ctx);
+function void    UI_SetState(UI_Ctx* ui_ctx);
 
-function void UI_Begin(Sys_Hnd window_handle, Sys_EventList* events);
+function void UI_Begin(Sys_Hnd window_handle, UI_EventList* events);
 function void UI_End();
+
+function UI_Event*    UI_EventPush(Arena* arena, UI_EventList* event_list);
+function void         UI_ConsumeEvent(UI_EventList* event_list, UI_Event* event);
+function UI_EventType UI_EventTypeFromSysEvent(Sys_EventType type);
+function UI_EventList UI_EventListFromSysEvents(Arena* arena, Sys_Hnd window, Sys_EventList* sys_events);
 
 #define UI_WigSetNil(wig) ((wig) = &ui_nil_wig)
 function b32     UI_IsNil(UI_Wig* wig);

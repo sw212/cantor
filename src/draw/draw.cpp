@@ -1,6 +1,17 @@
 Draw_State* draw_state = 0;
 per_thread Draw_ThreadContext* draw_thread_ctx = 0;
 
+function u64
+Draw_Hash(Buf8 data)
+{
+    u64 result = 0;
+    for (u64 i = 0; i < data.size; i++)
+    {
+        result = 31 * result + data.ptr[i];
+    }
+        
+    return result;
+}
 
 function Arena*
 Draw_GetArena()
@@ -143,6 +154,66 @@ Draw_Text(Vec2_f32  position, Font_Tag font, f32 size, Vec4_f32 color, Str8 stri
     ScratchEnd(scratch);
 
     f32 result = at.x - position.x;
+    return result;
+}
+
+function Render_Mesh3D*
+Draw_Mesh(Render_Hnd vertices, Render_Hnd indices, Render_Hnd texture, Mat4x4_f32 transform, Render_VertexFlags flags)
+{
+    Arena* arena = Draw_GetArena();
+    Draw_Context* context = Draw_GetContext();
+    Render_Pass*  pass = Draw_GetPass(arena, context, Render_PassType_3D);
+
+    Render_Pass_3D* pass_params = pass->geom;
+
+    if (!pass_params->meshes.count)
+    {
+        pass_params->meshes.count = 16;
+        pass_params->meshes.items = PushArray(arena, Render_Collection3DItem*, pass_params->meshes.count);
+    }
+
+    u64 data[] =
+    {
+        vertices.v_64[0],
+        vertices.v_64[1],
+        indices.v_64[0],
+        indices.v_64[1],
+        texture.v_64[0],
+        texture.v_64[1],
+        u64(context->top_sampler2d->v),
+    };
+
+    Buf8  key = {.ptr = (u8*)data, .size = sizeof(data)};
+    u64  hash = Draw_Hash(key);
+    u64 index = hash % pass_params->meshes.count;
+
+    Render_Collection3DItem* collection = 0;
+    for (Render_Collection3DItem* i = pass_params->meshes.items[index]; i != 0; i = i->next)
+    {
+        if (i->hash == hash)
+        {
+            collection = i;
+            break;
+        }
+    }
+
+    if (!collection)
+    {
+        collection = PushArray(arena, Render_Collection3DItem, 1);
+        StackPush(pass_params->meshes.items[index], collection);
+
+        collection->hash = hash;
+        collection->groups.instance_size = sizeof(Render_Mesh3D);
+        collection->params.vertices = vertices;
+        collection->params.indices = indices;
+        collection->params.texture = texture;
+        collection->params.transform = Identity4();
+        collection->params.sampler = context->top_sampler2d->v;
+    }
+
+    Render_Mesh3D* result = (Render_Mesh3D*)Render_PushGroupList(arena, &collection->groups, 256);
+    result->transform = transform;
+
     return result;
 }
 

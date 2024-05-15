@@ -158,14 +158,6 @@ enum Corner
     Corner_Count
 };
 
-enum Side
-{
-    Side_Invalid = -1,
-    Side_Min,
-    Side_Max,
-    Side_Count,
-};
-
 enum Axis2
 {
     Axis2_Invalid = -1,

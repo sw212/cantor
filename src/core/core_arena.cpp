@@ -113,7 +113,7 @@ ScratchBegin(Arena** conflicts, u64 conflict_count)
     {
         b32 conflicting = 0;
 
-        for(Arena **conflict = conflicts; conflict < conflicts+conflict_count; conflict += 1)
+        for(Arena** conflict = conflicts; conflict < conflicts+conflict_count; conflict += 1)
         {
             if(*conflict == ctx->scratch[i])
             {

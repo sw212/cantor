@@ -68,6 +68,7 @@ function u64 StrLength(u16*  str);
 
 function Str8 String8(u8* str, u64 size);
 function Str8 String8(Arena* arena, Str16 string);
+function Str8 String8(Arena* arena, Str32 string);
 function Str8 String8(char* str);
 #define StringLiteral(str) String8((u8*)(str), sizeof(str) - 1)
 #define Buf8Struct(ptr) Buf8{(u8*)(ptr), sizeof(*(ptr))}
@@ -76,6 +77,7 @@ function Str16 String16(u16* str, u64 size);
 function Str16 String16(Arena* arena, Str8 string);
 function Str16 String16(u16* str);
 
+function Str32 String32(u32* str, u64 size);
 function Str32 String32(Arena* arena, Str8 string);
 
 function Str8 Substr(Str8 string, u64 start, u64 end);
